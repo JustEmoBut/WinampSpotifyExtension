@@ -1,11 +1,12 @@
-# WinampSpotifyExtension
+# Winamp SpotiTube
 
-Winamp 5.9 input plugin (`in_spotify.dll`) in Rust: Spotify via librespot, YouTube via external yt-dlp + ffmpeg.
+Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, YouTube via external yt-dlp + ffmpeg.
 
 ## Build & install
 - Target is 32-bit `i686-pc-windows-msvc` (default via `.cargo/config.toml`); Winamp is a 32-bit process.
 - `cargo build --release`, `cargo test --release`.
-- Install = copy `target\i686-pc-windows-msvc\release\in_spotify.dll` to `C:\Program Files (x86)\Winamp\Plugins` (needs admin; Winamp must be closed).
+- Install: `.\install.ps1` (self-elevates, removes the pre-rename `in_spotify.dll`). Release: push a `v*` tag; `.github/workflows/release.yml` builds and attaches the DLL + script.
+- Renamed from `in_spotify`: `cache_dir()` moves `%APPDATA%\in_spotify` to `in_spotitube` once so cached credentials survive.
 - `Cargo.lock` pins `vergen` 9.0.6: librespot-core 0.8.0's build script breaks with vergen 9.1.0. Don't `cargo update` blindly.
 
 ## Layout

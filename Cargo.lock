@@ -1044,7 +1044,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "in_spotify"
+name = "in_spotitube"
 version = "0.1.0"
 dependencies = [
  "librespot",

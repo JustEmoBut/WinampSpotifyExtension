@@ -1,6 +1,6 @@
-# WinampSpotifyExtension
+# Winamp SpotiTube
 
-A Winamp input plugin (`in_spotify.dll`) that plays Spotify tracks, albums and playlists — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
+A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums and playlists — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
 
 > **Disclaimer:** librespot is an unofficial Spotify client, and streaming YouTube through yt-dlp is not permitted by YouTube's Terms of Service. Either may put your account at risk. Use at your own risk. This project only streams; it never saves audio to disk.
 
@@ -21,7 +21,7 @@ A Winamp input plugin (`in_spotify.dll`) that plays Spotify tracks, albums and p
 | Winamp | 5.9.2 (build 10042) — other 5.x versions with Unicode input plugin support should work |
 | Spotify | **Premium** account (librespot cannot play on free accounts) |
 | YouTube | `yt-dlp` and `ffmpeg` on `PATH`: `winget install yt-dlp.yt-dlp` (pulls in `yt-dlp.FFmpeg`) |
-| Build tools | [Rust](https://rustup.rs) (stable) and Visual Studio / Build Tools with the **Desktop development with C++** workload |
+| Build tools (source only) | [Rust](https://rustup.rs) (stable) and Visual Studio / Build Tools with the **Desktop development with C++** workload |
 
 ## Installation
 
@@ -68,7 +68,19 @@ Notes:
 - Do **not** disable UAC or certificate revocation checking system-wide to work around this.
 - Alternative without touching any file: skip file-type association in the wizard and in *Preferences → File Types*, and set default apps in *Windows Settings → Apps → Default apps* instead.
 
-### 2. Build the plugin
+### 2. Install the plugin
+
+Download `in_spotitube.dll` and `install.ps1` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The script asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies the plugin to `Winamp\Plugins` and offers to install yt-dlp via winget. Pass `-Winamp <folder>` if Winamp isn't in `C:\Program Files (x86)\Winamp`.
+
+To uninstall, delete `in_spotitube.dll` from the `Plugins` folder (and optionally `%APPDATA%\in_spotitube`).
+
+### Building from source
 
 Winamp is a 32-bit application, so the plugin must be built for `i686` (already the default via `.cargo/config.toml`).
 
@@ -77,19 +89,12 @@ git clone https://github.com/JustEmoBut/WinampSpotifyExtension.git
 cd WinampSpotifyExtension
 rustup target add i686-pc-windows-msvc
 cargo build --release
+.\install.ps1
 ```
 
-Output: `target\i686-pc-windows-msvc\release\in_spotify.dll`
+Output: `target\i686-pc-windows-msvc\release\in_spotitube.dll` (`install.ps1` picks it up automatically).
 
-### 3. Install
-
-Close Winamp, then in an **administrator** PowerShell from the repository folder:
-
-```powershell
-Copy-Item 'target\i686-pc-windows-msvc\release\in_spotify.dll' 'C:\Program Files (x86)\Winamp\Plugins\' -Force
-```
-
-To uninstall, delete `in_spotify.dll` from the `Plugins` folder (and optionally `%APPDATA%\in_spotify`).
+Releases are built by GitHub Actions when a `v*` tag is pushed.
 
 ## Usage
 
@@ -97,7 +102,7 @@ To uninstall, delete `in_spotify.dll` from the `Plugins` folder (and optionally 
    `https://open.spotify.com/track/...`, `https://open.spotify.com/album/...`, `https://open.spotify.com/playlist/...`
    — or a URI such as `spotify:track:<id>`.
 2. In the Winamp playlist: **Add → Add URL**, paste and play.
-3. **First play only:** your browser opens the Spotify login page. After you approve, the browser is redirected to `http://127.0.0.1:8989/login` and playback starts. Credentials are cached in `%APPDATA%\in_spotify`, so you won't be asked again.
+3. **First play only:** your browser opens the Spotify login page. After you approve, the browser is redirected to `http://127.0.0.1:8989/login` and playback starts. Credentials are cached in `%APPDATA%\in_spotitube`, so you won't be asked again.
 
 Titles show as raw links until you are logged in; after the first track starts they fill in automatically.
 
@@ -108,9 +113,9 @@ Titles show as raw links until you are logged in; after the first track starts t
 | Problem | Fix |
 |---|---|
 | UAC: *"This app has been blocked for your protection"* | See [Fix Winamp's revoked certificate](#1-fix-winamps-revoked-certificate-if-needed). |
-| Playlist entry stuck at **[Connecting to host]** | The plugin isn't loaded, so Winamp's stock `in_mp3` grabbed the link. Check that `in_spotify.dll` is in `Winamp\Plugins` and restart Winamp. |
+| Playlist entry stuck at **[Connecting to host]** | The plugin isn't loaded, so Winamp's stock `in_mp3` grabbed the link. Check that `in_spotitube.dll` is in `Winamp\Plugins` and restart Winamp. |
 | Login fails / browser shows a connection error | Port `8989` must be free; close whatever is using it and try again. |
-| *Spotify connect failed* after it used to work | Delete `%APPDATA%\in_spotify` to force a fresh login. |
+| *Spotify connect failed* after it used to work | Delete `%APPDATA%\in_spotitube` to force a fresh login. |
 | `signtool.exe`: *not a valid application for this OS platform* | You used the `arm64` build; use the `x64` (or `x86`) folder. |
 | *yt-dlp / ffmpeg not found on PATH* | Install them with winget (see Requirements), then restart Winamp. |
 | YouTube error from yt-dlp (e.g. *Sign in to confirm*, *unavailable*) | Update yt-dlp: `winget upgrade yt-dlp.yt-dlp`. Private, age-restricted or region-locked videos can't play. |

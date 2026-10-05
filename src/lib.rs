@@ -140,7 +140,7 @@ struct InModule {
 
 static mut MODULE: InModule = InModule {
     version: IN_VER_UNICODE,
-    description: c"Spotify (librespot)".as_ptr().cast(),
+    description: c"SpotiTube: Spotify + YouTube".as_ptr().cast(),
     h_main_window: std::ptr::null_mut(),
     h_dll_instance: std::ptr::null_mut(),
     file_extensions: b"\0\0".as_ptr(), // double-NUL: no extensions, URIs matched by IsOurFile
@@ -432,7 +432,15 @@ async fn expand(uri: &SpotifyUri) -> Result<Vec<String>, String> {
 
 fn cache_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("in_spotify")
+    let dir = base.join("in_spotitube");
+    // Pre-rename installs kept credentials in `in_spotify`; move them so users stay logged in.
+    let legacy = base.join("in_spotify");
+    if !dir.exists() && legacy.exists() {
+        if let Err(e) = std::fs::rename(&legacy, &dir) {
+            show_error(&format!("Could not move {} to {}: {e}\nYou may need to log in to Spotify again.", legacy.display(), dir.display()));
+        }
+    }
+    dir
 }
 
 async fn connect() -> Result<Session, String> {
