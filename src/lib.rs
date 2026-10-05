@@ -1,7 +1,10 @@
 //! Winamp input plugin that plays Spotify tracks through librespot.
 //! Playlist entries: `spotify:{track,album,playlist}:<id>` or the matching open.spotify.com links.
+//! Also plays YouTube videos/playlists (audio only) through yt-dlp + ffmpeg, see `youtube`.
 //! Album/playlist entries are expanded into their tracks when played.
 //! Struct layouts and IPC ids follow the Winamp SDK headers in2.h / out.h / wa_ipc.h / ipc_pe.h.
+
+mod youtube;
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -59,6 +62,8 @@ const SAMPLE_RATE: i32 = 44100; // librespot::playback::SAMPLE_RATE
 const CHANNELS: i32 = 2; // librespot::playback::NUM_CHANNELS
 const BITS: i32 = 16;
 const BYTES_PER_FRAME: usize = (CHANNELS * BITS / 8) as usize;
+/// SA/VSAAddPCMData read at least this many frames (in2.h: "needs at least 576 samples").
+const VIS_MIN_FRAMES: usize = 576;
 const BITRATE_KBPS: i32 = 320;
 const POLL: Duration = Duration::from_millis(10);
 const VOLUME_KEEP: i32 = -666; // SDK convention: re-apply current volume
@@ -231,6 +236,7 @@ static LENGTH_MS: AtomicI32 = AtomicI32::new(-1);
 static CURRENT: Mutex<String> = Mutex::new(String::new());
 static TITLES: Mutex<Option<HashMap<String, (String, i32)>>> = Mutex::new(None);
 
+
 fn runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| Runtime::new().expect("tokio runtime"))
 }
@@ -256,13 +262,16 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 fn show_error(msg: &str) {
     let text = to_wide(msg);
-    let caption = to_wide("Spotify plugin");
+    let caption = to_wide("Spotify/YouTube plugin");
     unsafe { MessageBoxW(module().h_main_window, text.as_ptr(), caption.as_ptr(), MB_ICONERROR) };
 }
 
 /// Accepts `spotify:<kind>:<id>` and `https://open.spotify.com/[intl-xx/]<kind>/<id>[?...]`
 /// for kind = track, album or playlist.
 fn parse_link(s: &str) -> Option<SpotifyUri> {
+    // Winamp saves a bare `spotify:` entry as a relative file path, so after a restart it comes
+    // back as `<playlist dir>\spotify:...`; strip that prefix.
+    let s = s.rfind("\\spotify:").map_or(s, |i| &s[i + 1..]);
     let (kind, id) = if let Some(rest) = s.strip_prefix("spotify:") {
         rest.split_once(':')?
     } else {
@@ -287,7 +296,11 @@ static HOOKED_ORIGINALS: [AtomicUsize; STOCK_INPUT_PLUGINS.len()] =
 static HOOKED_UNICODE: [AtomicBool; STOCK_INPUT_PLUGINS.len()] =
     [const { AtomicBool::new(false) }; STOCK_INPUT_PLUGINS.len()];
 
-/// IsOurFile wrapper for stock plugin `I`: hides Spotify links so Winamp falls through to us.
+fn is_supported(s: &str) -> bool {
+    parse_link(s).is_some() || youtube::parse(s).is_some()
+}
+
+/// IsOurFile wrapper for stock plugin `I`: hides our links so Winamp falls through to us.
 unsafe extern "C" fn hooked_is_our_file<const I: usize>(file: *const c_void) -> i32 {
     let name = if HOOKED_UNICODE[I].load(Ordering::Relaxed) {
         wide_to_string(file.cast())
@@ -296,7 +309,7 @@ unsafe extern "C" fn hooked_is_our_file<const I: usize>(file: *const c_void) -> 
     } else {
         unsafe { std::ffi::CStr::from_ptr(file.cast()) }.to_string_lossy().into_owned()
     };
-    if parse_link(&name).is_some() {
+    if is_supported(&name) {
         return 0;
     }
     let original: unsafe extern "C" fn(*const c_void) -> i32 =
@@ -360,14 +373,18 @@ async fn expand_task(uri: SpotifyUri, generation: u64) {
             return;
         }
     };
-    if !is_current(generation) {
-        return;
+    if is_current(generation) {
+        replace_current_entry(&tracks);
     }
+}
+
+/// Replaces the playlist entry at the current position with `entries`, then starts the first one.
+fn replace_current_entry(entries: &[String]) {
     let main = module().h_main_window;
     unsafe {
         let pe = SendMessageW(main, WM_WA_IPC, IPC_GETWND_PE, IPC_GETWND) as Hwnd;
         let pos = SendMessageW(main, WM_WA_IPC, 0, IPC_GETLISTPOS);
-        for (i, track) in tracks.iter().enumerate() {
+        for (i, track) in entries.iter().enumerate() {
             let mut info = FileInfoW { file: [0; MAX_PATH], index: pos as i32 + 1 + i as i32 };
             for (dst, src) in info.file.iter_mut().zip(track.encode_utf16().take(MAX_PATH - 1)) {
                 *dst = src;
@@ -401,11 +418,15 @@ async fn expand(uri: &SpotifyUri) -> Result<Vec<String>, String> {
             .cloned()
             .collect(),
     };
-    // Episodes and local files are skipped; only tracks are playable here.
+    // Episodes and local files are skipped; only tracks are playable here. Entries are https
+    // links because Winamp rewrites bare `spotify:` entries into file paths when saving.
     Ok(items
         .iter()
-        .filter(|u| matches!(u, SpotifyUri::Track { .. }))
-        .filter_map(|u| u.to_uri().ok())
+        .filter_map(|u| match u {
+            SpotifyUri::Track { id } => id.to_base62().ok(),
+            _ => None,
+        })
+        .map(|id| format!("https://open.spotify.com/track/{id}"))
         .collect())
 }
 
@@ -462,8 +483,13 @@ async fn fetch_title(session: &Session, uri: &SpotifyUri, key: &str) -> Result<i
     let track = Track::get(session, uri).await.map_err(|e| e.to_string())?;
     let artists: Vec<_> = track.artists.0.iter().map(|a| a.name.as_str()).collect();
     let title = format!("{} - {}", artists.join(", "), track.name);
-    TITLES.lock().unwrap().get_or_insert_default().insert(key.to_owned(), (title, track.duration));
+    store_title(key, title, track.duration);
+    Ok(track.duration)
+}
 
+/// Caches an entry's title/length and makes Winamp re-read it.
+fn store_title(key: &str, title: String, length_ms: i32) {
+    TITLES.lock().unwrap().get_or_insert_default().insert(key.to_owned(), (title, length_ms));
     let main = module().h_main_window;
     let wide = to_wide(key);
     unsafe {
@@ -471,11 +497,23 @@ async fn fetch_title(session: &Session, uri: &SpotifyUri, key: &str) -> Result<i
         SendMessageW(main, WM_WA_IPC, wide.as_ptr() as usize, IPC_REFRESHPLCACHE);
         SendMessageW(main, WM_WA_IPC, 0, IPC_UPDTITLE);
     }
-    Ok(track.duration)
+}
+
+/// Placeholder marking a title lookup as pending so repeated GetFileInfo calls don't refetch.
+fn mark_title_pending(key: &str) {
+    TITLES.lock().unwrap().get_or_insert_default().insert(key.to_owned(), (key.to_owned(), -1));
+}
+
+fn forget_title(key: &str) {
+    TITLES.lock().unwrap().get_or_insert_default().remove(key);
 }
 
 /// Fetches a playlist entry's title in the background if we're already logged in.
 fn request_title(key: &str) {
+    if let Some(youtube::Link::Video(id)) = youtube::parse(key) {
+        youtube::request_title(key, id);
+        return;
+    }
     let Some(uri @ SpotifyUri::Track { .. }) = parse_link(key) else { return };
     let session = match ENGINE.try_lock() {
         Ok(guard) => match guard.as_ref() {
@@ -484,13 +522,12 @@ fn request_title(key: &str) {
         },
         Err(_) => return,
     };
-    // Placeholder marks the lookup as pending so repeated GetFileInfo calls don't refetch.
-    TITLES.lock().unwrap().get_or_insert_default().insert(key.to_owned(), (key.to_owned(), -1));
+    mark_title_pending(key);
     let key = key.to_owned();
     runtime().spawn(async move {
         if fetch_title(&session, &uri, &key).await.is_err() {
             // Leave the link as the title; a later Play() retries and reports the error.
-            TITLES.lock().unwrap().get_or_insert_default().remove(&key);
+            forget_title(&key);
         }
     });
 }
@@ -532,20 +569,23 @@ async fn play_task(uri: SpotifyUri, key: String, generation: u64) {
     }
 
     // Let the output plugin drain before telling Winamp to advance.
-    loop {
-        if !is_current(generation) {
-            return;
-        }
-        let playing = {
-            let open = OUT_OPEN.lock().unwrap();
-            *open && unsafe { (out().is_playing)() } != 0
-        };
-        if !playing {
-            break;
-        }
+    while output_draining(generation) {
         tokio::time::sleep(POLL).await;
     }
-    unsafe { PostMessageW(module().h_main_window, WM_WA_MPEG_EOF, 0, 0) };
+    post_eof(generation);
+}
+
+/// True while track `generation` is current and the output plugin still has audio buffered.
+fn output_draining(generation: u64) -> bool {
+    let open = OUT_OPEN.lock().unwrap();
+    is_current(generation) && *open && unsafe { (out().is_playing)() } != 0
+}
+
+/// Tells Winamp the track ended so it advances the playlist.
+fn post_eof(generation: u64) {
+    if is_current(generation) {
+        unsafe { PostMessageW(module().h_main_window, WM_WA_MPEG_EOF, 0, 0) };
+    }
 }
 
 /// Feeds librespot's decoded PCM into Winamp's DSP, vis and output plugin.
@@ -555,52 +595,60 @@ impl Sink for WinampSink {
     fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         // Raw packets only occur in passthrough mode, which this plugin never enables.
         let Ok(samples) = packet.samples() else { return Ok(()) };
-        let pcm = converter.f64_to_s16(samples);
-        let frames = pcm.len() / CHANNELS as usize;
+        write_pcm(&converter.f64_to_s16(samples), None);
+        Ok(())
+    }
+}
 
-        // DSP plugins may return up to twice as many samples.
-        let mut buf = pcm.clone();
-        buf.resize(pcm.len() * 2, 0);
+/// Blocks until `pcm` (interleaved 16-bit stereo) is handed to Winamp's DSP, vis and output.
+/// Returns false if the output was closed, or `generation` stopped being current, meanwhile.
+fn write_pcm(pcm: &[i16], generation: Option<u64>) -> bool {
+    let frames = pcm.len() / CHANNELS as usize;
 
-        loop {
-            {
-                let open = OUT_OPEN.lock().unwrap();
-                if !*open {
-                    return Ok(()); // stopped: drop the audio
-                }
-                let m = module();
-                let o = out();
-                let mut n = frames;
-                unsafe {
-                    if m.dsp_is_active.is_some_and(|f| f() != 0) {
-                        if let Some(dsp) = m.dsp_do_samples {
-                            n = dsp(buf.as_mut_ptr(), frames as i32, BITS, CHANNELS, SAMPLE_RATE) as usize;
-                        }
-                    }
-                    let bytes = n * BYTES_PER_FRAME;
-                    if (o.can_write)() >= bytes as i32 {
-                        let t = (o.get_written_time)();
-                        if let Some(sa) = m.sa_add_pcm_data {
-                            sa(buf.as_mut_ptr().cast(), CHANNELS, BITS, t);
-                        }
-                        if let Some(vsa) = m.vsa_add_pcm_data {
-                            vsa(buf.as_mut_ptr().cast(), CHANNELS, BITS, t);
-                        }
-                        (o.write)(buf.as_mut_ptr().cast(), bytes as i32);
-                        return Ok(());
-                    }
-                }
-                // DSP may have altered buf in place; restore before retrying.
-                buf[..pcm.len()].copy_from_slice(&pcm);
+    // DSP plugins may return up to twice as many samples, and SA/VSAAddPCMData always read
+    // VIS_MIN_FRAMES frames: librespot packets can be shorter, so zero-pad (Winamp otherwise
+    // reads past the buffer and corrupts the heap).
+    let mut buf = pcm.to_vec();
+    buf.resize((pcm.len() * 2).max(VIS_MIN_FRAMES * CHANNELS as usize), 0);
+
+    loop {
+        {
+            let open = OUT_OPEN.lock().unwrap();
+            if !*open || generation.is_some_and(|g| !is_current(g)) {
+                return false; // stopped or seeked: drop the audio
             }
-            std::thread::sleep(POLL);
+            let m = module();
+            let o = out();
+            let mut n = frames;
+            unsafe {
+                if m.dsp_is_active.is_some_and(|f| f() != 0) {
+                    if let Some(dsp) = m.dsp_do_samples {
+                        n = dsp(buf.as_mut_ptr(), frames as i32, BITS, CHANNELS, SAMPLE_RATE) as usize;
+                    }
+                }
+                let bytes = n * BYTES_PER_FRAME;
+                if (o.can_write)() >= bytes as i32 {
+                    let t = (o.get_written_time)();
+                    if let Some(sa) = m.sa_add_pcm_data {
+                        sa(buf.as_mut_ptr().cast(), CHANNELS, BITS, t);
+                    }
+                    if let Some(vsa) = m.vsa_add_pcm_data {
+                        vsa(buf.as_mut_ptr().cast(), CHANNELS, BITS, t);
+                    }
+                    (o.write)(buf.as_mut_ptr().cast(), bytes as i32);
+                    return true;
+                }
+            }
+            // DSP may have altered buf in place; restore before retrying.
+            buf[..pcm.len()].copy_from_slice(pcm);
         }
+        std::thread::sleep(POLL);
     }
 }
 
 unsafe extern "C" fn about(parent: Hwnd) {
     let text = to_wide(
-        "Spotify input plugin (librespot)\n\nAdd Spotify track, album or playlist links (open.spotify.com/... or spotify:...) to the playlist.\nRequires Spotify Premium.",
+        "Spotify/YouTube input plugin\n\nAdd Spotify track, album or playlist links (open.spotify.com/... or spotify:...) or YouTube video/playlist links to the playlist.\nSpotify requires Premium (librespot). YouTube requires yt-dlp and ffmpeg on PATH.",
     );
     let caption = to_wide("About");
     unsafe { MessageBoxW(parent, text.as_ptr(), caption.as_ptr(), 0) };
@@ -643,24 +691,55 @@ unsafe extern "C" fn info_box(_file: *const u16, _parent: Hwnd) -> i32 {
 }
 
 unsafe extern "C" fn is_our_file(file: *const u16) -> i32 {
-    parse_link(&wide_to_string(file)).is_some() as i32
+    is_supported(&wide_to_string(file)) as i32
 }
 
 unsafe extern "C" fn play(file: *const u16) -> i32 {
     let key = wide_to_string(file);
+
+    if let Some(link) = youtube::parse(&key) {
+        *youtube::STREAM.lock().unwrap() = None;
+        return match link {
+            youtube::Link::Playlist(id) => {
+                // Output stays closed; the expansion's IPC_STARTPLAY plays the first video.
+                let generation = next_generation();
+                std::thread::spawn(move || youtube::expand(id, generation));
+                0
+            }
+            youtube::Link::Video(id) => {
+                let Some(generation) = open_output(&key) else { return 1 };
+                std::thread::spawn(move || youtube::play(id, key, generation));
+                0
+            }
+        };
+    }
+
     let Some(uri) = parse_link(&key) else { return -1 };
+    *youtube::STREAM.lock().unwrap() = None;
 
     if !matches!(uri, SpotifyUri::Track { .. }) {
         // Output stays closed; IPC_STARTPLAY from expand_task stops us and plays the first track.
-        let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = next_generation();
         runtime().spawn(expand_task(uri, generation));
         return 0;
     }
 
+    let Some(generation) = open_output(&key) else { return 1 };
+    // Login and loading run off the UI thread; first use opens the browser for OAuth.
+    runtime().spawn(play_task(uri, key, generation));
+    0
+}
+
+fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Opens Winamp's output for 44.1 kHz 16-bit stereo and starts a new track generation.
+fn open_output(key: &str) -> Option<u64> {
     let o = out();
     let max_latency = unsafe { (o.open)(SAMPLE_RATE, CHANNELS, BITS, -1, -1) };
     if max_latency < 0 {
-        return 1;
+        return None;
     }
     let m = module();
     unsafe {
@@ -678,14 +757,10 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
 
     *OUT_OPEN.lock().unwrap() = true;
     PAUSED.store(false, Ordering::SeqCst);
-    let known_len = TITLES.lock().unwrap().get_or_insert_default().get(&key).map(|t| t.1);
+    let known_len = TITLES.lock().unwrap().get_or_insert_default().get(key).map(|t| t.1);
     LENGTH_MS.store(known_len.unwrap_or(-1), Ordering::SeqCst);
-    *CURRENT.lock().unwrap() = key.clone();
-    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-
-    // Login and loading run off the UI thread; first use opens the browser for OAuth.
-    runtime().spawn(play_task(uri, key, generation));
-    0
+    *CURRENT.lock().unwrap() = key.to_owned();
+    Some(next_generation())
 }
 
 unsafe extern "C" fn pause() {
@@ -709,10 +784,11 @@ unsafe extern "C" fn is_paused() -> i32 {
 }
 
 unsafe extern "C" fn stop() {
-    GENERATION.fetch_add(1, Ordering::SeqCst);
+    next_generation();
     if let Some(p) = player() {
         p.stop();
     }
+    *youtube::STREAM.lock().unwrap() = None;
     let mut open = OUT_OPEN.lock().unwrap();
     if *open {
         *open = false;
@@ -736,6 +812,18 @@ unsafe extern "C" fn get_output_time() -> i32 {
 }
 
 unsafe extern "C" fn set_output_time(ms: i32) {
+    let stream = youtube::STREAM.lock().unwrap().clone();
+    if let Some(source) = stream {
+        // Restart ffmpeg at the new position; the old reader sees a stale generation and exits.
+        let generation = next_generation();
+        let open = OUT_OPEN.lock().unwrap();
+        if *open {
+            unsafe { (out().flush)(ms) };
+        }
+        drop(open);
+        std::thread::spawn(move || youtube::stream(source, ms.max(0) as u32, generation));
+        return;
+    }
     if let Some(p) = player() {
         p.seek(ms.max(0) as u32);
     }
@@ -766,6 +854,7 @@ mod tests {
             format!("spotify:track:{id}"),
             format!("https://open.spotify.com/track/{id}"),
             format!("https://open.spotify.com/intl-tr/track/{id}?si=abc"),
+            format!("C:\\Users\\Just\\AppData\\Roaming\\Winamp\\spotify:track:{id}"),
         ] {
             assert!(matches!(parse_link(&s), Some(SpotifyUri::Track { .. })), "{s}");
         }

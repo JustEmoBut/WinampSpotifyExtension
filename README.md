@@ -1,14 +1,15 @@
 # WinampSpotifyExtension
 
-A Winamp input plugin (`in_spotify.dll`) that plays Spotify tracks, albums and playlists straight from the Winamp playlist. Audio is decoded by [librespot](https://github.com/librespot-org/librespot) and fed through Winamp's own output, EQ, DSP and visualization plugins.
+A Winamp input plugin (`in_spotify.dll`) that plays Spotify tracks, albums and playlists — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
 
-> **Disclaimer:** librespot is an unofficial Spotify client. Using it may violate Spotify's Terms of Service and could put your account at risk. Use at your own risk. This project only streams; it never saves audio to disk.
+> **Disclaimer:** librespot is an unofficial Spotify client, and streaming YouTube through yt-dlp is not permitted by YouTube's Terms of Service. Either may put your account at risk. Use at your own risk. This project only streams; it never saves audio to disk.
 
 ## Features
 
 - Paste `open.spotify.com` links or `spotify:` URIs into the playlist (track, album, playlist)
+- Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
-- Track titles (`Artist - Title`) and durations appear in the playlist
+- Track titles and durations appear in the playlist
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
 - One-time browser login; credentials are cached
 
@@ -19,6 +20,7 @@ A Winamp input plugin (`in_spotify.dll`) that plays Spotify tracks, albums and p
 | OS | Windows 10/11 (x64 or x86) |
 | Winamp | 5.9.2 (build 10042) — other 5.x versions with Unicode input plugin support should work |
 | Spotify | **Premium** account (librespot cannot play on free accounts) |
+| YouTube | `yt-dlp` and `ffmpeg` on `PATH`: `winget install yt-dlp.yt-dlp` (pulls in `yt-dlp.FFmpeg`) |
 | Build tools | [Rust](https://rustup.rs) (stable) and Visual Studio / Build Tools with the **Desktop development with C++** workload |
 
 ## Installation
@@ -99,6 +101,8 @@ To uninstall, delete `in_spotify.dll` from the `Plugins` folder (and optionally 
 
 Titles show as raw links until you are logged in; after the first track starts they fill in automatically.
 
+**YouTube:** add a video or playlist link the same way. No login is needed. Each video takes ~3 seconds to start while yt-dlp resolves the stream. Restart Winamp after installing yt-dlp/ffmpeg so it sees the updated `PATH`. Keep yt-dlp current (`winget upgrade yt-dlp.yt-dlp`) — YouTube changes often and old versions stop working.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -108,18 +112,24 @@ Titles show as raw links until you are logged in; after the first track starts t
 | Login fails / browser shows a connection error | Port `8989` must be free; close whatever is using it and try again. |
 | *Spotify connect failed* after it used to work | Delete `%APPDATA%\in_spotify` to force a fresh login. |
 | `signtool.exe`: *not a valid application for this OS platform* | You used the `arm64` build; use the `x64` (or `x86`) folder. |
+| *yt-dlp / ffmpeg not found on PATH* | Install them with winget (see Requirements), then restart Winamp. |
+| YouTube error from yt-dlp (e.g. *Sign in to confirm*, *unavailable*) | Update yt-dlp: `winget upgrade yt-dlp.yt-dlp`. Private, age-restricted or region-locked videos can't play. |
 | Build error in `librespot-core` build script about `vergen` | Keep the committed `Cargo.lock` (it pins `vergen` to 9.0.6); don't run `cargo update` blindly. |
 
 ## Limitations
 
 - Artist links, podcasts/episodes and local files are not supported (skipped when expanding playlists).
 - A very short glitch may be audible right after seeking.
+- YouTube is audio only. A watch link with `&list=` expands the whole playlist, except auto-generated mixes (`list=RD...`), which play just that video.
+- Pausing a YouTube video for a long time may end the stream early.
+- **Known issue:** Winamp can occasionally crash with a heap corruption error (`0xc0000374`); the cause is still being investigated.
 - Output is always 44.1 kHz / 16-bit stereo.
 
 ## How it works
 
-- Winamp always lets its stock `in_mp3` plugin claim every `http(s)` URL first. On startup this plugin wraps the stock plugins' `IsOurFile` so that Spotify links fall through to it; other URLs (e.g. internet radio) are unaffected.
+- Winamp always lets its stock `in_mp3` plugin claim every `http(s)` URL first. On startup this plugin wraps the stock plugins' `IsOurFile` so that Spotify and YouTube links fall through to it; other URLs (e.g. internet radio) are unaffected.
 - A custom librespot `Sink` converts decoded audio to 16-bit PCM and writes it through Winamp's DSP, visualization and output plugin.
+- YouTube: `yt-dlp` resolves the title, duration and best audio stream URL; `ffmpeg` decodes it to the same 16-bit PCM path. Seeking restarts ffmpeg at the new position.
 - Album/playlist entries are replaced in place with their tracks via Winamp's playlist IPC.
 
 ## License
