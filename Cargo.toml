@@ -1,0 +1,11 @@
+[package]
+name = "in_spotify"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+librespot = { version = "0.8.0", default-features = false, features = ["native-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+[lib]
+crate-type = ["cdylib"]
