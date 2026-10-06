@@ -46,7 +46,9 @@ const WM_COPYDATA: u32 = 0x004A;
 const WM_WA_IPC: u32 = 0x0400; // WM_USER
 const IPC_STARTPLAY: isize = 102;
 const IPC_SETPLAYLISTPOS: isize = 121;
+const IPC_GETLISTLENGTH: isize = 124;
 const IPC_GETLISTPOS: isize = 125;
+const IPC_GETPLAYLISTFILEW: isize = 214;
 const IPC_UPDTITLE: isize = 243;
 const IPC_REFRESHPLCACHE: isize = 247;
 const IPC_GETWND: isize = 260;
@@ -663,10 +665,15 @@ async fn play_task(uri: SpotifyUri, key: String, generation: u64) {
 
     let mut events = player.get_player_event_channel();
     player.load(uri, true, 0);
+    let mut preloaded = false;
 
     while let Some(event) = events.recv().await {
         if !is_current(generation) {
             return;
+        }
+        if !preloaded && matches!(event, PlayerEvent::Playing { .. }) {
+            preloaded = true;
+            std::thread::spawn(preload_next);
         }
         if matches!(event, PlayerEvent::EndOfTrack { .. } | PlayerEvent::Unavailable { .. }) {
             break;
@@ -678,6 +685,31 @@ async fn play_task(uri: SpotifyUri, key: String, generation: u64) {
         tokio::time::sleep(POLL).await;
     }
     post_eof(generation);
+}
+
+/// The playlist entry after the current one, if any. Plugins can't see the shuffle order,
+/// so with shuffle on this guesses wrong and the preload is simply unused.
+fn next_entry() -> Option<String> {
+    let main = module().h_main_window;
+    unsafe {
+        let pos = SendMessageW(main, WM_WA_IPC, 0, IPC_GETLISTPOS);
+        let len = SendMessageW(main, WM_WA_IPC, 0, IPC_GETLISTLENGTH);
+        if pos < 0 || pos + 1 >= len {
+            return None;
+        }
+        let file = SendMessageW(main, WM_WA_IPC, (pos + 1) as usize, IPC_GETPLAYLISTFILEW) as *const u16;
+        Some(wide_to_string(file)).filter(|f| !f.is_empty())
+    }
+}
+
+/// Resolves the next playlist entry ahead of time so it starts without the usual delay.
+fn preload_next() {
+    let Some(key) = next_entry() else { return };
+    if let Some(youtube::Link::Video(id)) = youtube::parse(&key) {
+        youtube::preload(id);
+    } else if let (Some(uri @ SpotifyUri::Track { .. }), Some(p)) = (parse_link(&key), player()) {
+        p.preload(uri);
+    }
 }
 
 /// True while track `generation` is current and the output plugin still has audio buffered.
@@ -831,6 +863,9 @@ Open in browser?", format_length(len)));
 
 /// Winamp's tag lookup (`artist`, `album`, ...). Returns 0 for unknown keys or values so
 /// Winamp falls back to GetFileInfo's "Artist - Title".
+///
+/// # Safety
+/// `file` and `data` must be NUL-terminated (or null); `dest` must hold `dest_len` u16s.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn winampGetExtendedFileInfoW(file: *const u16, data: *const u8, dest: *mut u16, dest_len: i32) -> i32 {
     if data.is_null() || dest.is_null() || dest_len <= 0 {

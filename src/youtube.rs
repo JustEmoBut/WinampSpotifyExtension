@@ -35,6 +35,9 @@ pub struct Source {
     audio: String,
 }
 
+/// yt-dlp output (title, duration, channel, audio URL) resolved ahead of time for a video id.
+static PRELOADED: Mutex<Option<(String, Vec<String>)>> = Mutex::new(None);
+
 /// yt-dlp self-update (`-U`) is attempted at most once per Winamp session.
 static UPDATE_TRIED: AtomicBool = AtomicBool::new(false);
 
@@ -148,9 +151,22 @@ fn duration_ms(s: &str) -> i32 {
     s.trim().parse::<f64>().map_or(-1, |secs| (secs * MS_PER_SEC) as i32)
 }
 
-pub fn play(id: String, key: String, generation: u64) {
+/// Title, duration, channel and audio URL of a video.
+fn resolve(id: &str) -> Result<Vec<String>, String> {
     let format = crate::youtube_format();
-    let lines = match yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "channel", "--print", "urls", &video_url(&id)]) {
+    yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "channel", "--print", "urls", &video_url(id)])
+}
+
+/// Resolves `id` in the background so a following `play` can skip yt-dlp.
+pub fn preload(id: String) {
+    if let Ok(lines) = resolve(&id) {
+        *PRELOADED.lock().unwrap() = Some((id, lines));
+    }
+}
+
+pub fn play(id: String, key: String, generation: u64) {
+    let preloaded = PRELOADED.lock().unwrap().take_if(|(p, _)| *p == id).map(|(_, lines)| lines);
+    let lines = match preloaded.map_or_else(|| resolve(&id), Ok) {
         Ok(l) => l,
         Err(msg) => {
             if is_current(generation) {
@@ -172,6 +188,7 @@ pub fn play(id: String, key: String, generation: u64) {
     store_title(&key, title.clone(), length);
     let source = Source { page: video_url(&id), audio: url.clone() };
     *STREAM.lock().unwrap() = Some(source.clone());
+    std::thread::spawn(crate::preload_next);
     stream(source, 0, generation);
 }
 

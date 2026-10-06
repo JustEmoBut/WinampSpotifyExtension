@@ -10,6 +10,7 @@ A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums, pl
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist; artist, album, year and track number are exposed as tags (YouTube: channel as artist)
+- The next playlist entry is resolved while the current one plays, so it starts without the usual delay (not with shuffle)
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
 - One-time browser login; credentials are cached
 - File info (Alt+3) shows title, length and link, and can open the link in the browser
@@ -109,7 +110,7 @@ Releases are built by GitHub Actions when a `v*` tag is pushed.
 
 Titles show as raw links until you are logged in; after the first track starts they fill in automatically.
 
-**YouTube:** add a video or playlist link the same way. No login is needed. Each video takes ~3 seconds to start while yt-dlp resolves the stream. Restart Winamp after installing yt-dlp/ffmpeg so it sees the updated `PATH`. Keep yt-dlp current (`winget upgrade yt-dlp.yt-dlp`) — YouTube changes often and old versions stop working.
+**YouTube:** add a video or playlist link the same way. No login is needed. Each video takes ~3 seconds to start while yt-dlp resolves the stream, unless it was preloaded as the next entry. Restart Winamp after installing yt-dlp/ffmpeg so it sees the updated `PATH`. Keep yt-dlp current (`winget upgrade yt-dlp.yt-dlp`) — YouTube changes often and old versions stop working.
 
 ## Troubleshooting
 
