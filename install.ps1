@@ -1,4 +1,5 @@
-# Installs (or with -Uninstall removes) in_spotitube.dll in Winamp's Plugins folder.
+# Installs (or with -Uninstall removes) in_spotitube.dll and ml_spotitube.dll (YouTube search
+# in the Media Library) in Winamp's Plugins folder.
 # Usage: .\install.ps1 [-Dll path\to\in_spotitube.dll] [-Winamp <folder>] [-Uninstall]
 # Double-click install.bat to run it without changing the execution policy.
 param(
@@ -37,6 +38,9 @@ try {
             if (-not $Dll) { throw 'in_spotitube.dll not found. Download it from the Releases page or build it first.' }
         }
         $Dll = (Resolve-Path $Dll).Path
+        # The Media Library plugin is optional; it ships next to the input plugin.
+        $mlDll = Join-Path (Split-Path $Dll) 'ml_spotitube.dll'
+        if (-not (Test-Path $mlDll)) { $mlDll = $null }
     }
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
@@ -66,7 +70,7 @@ try {
     }
 
     # The pre-rename plugin claims the same links; leaving both would make them fight over playback.
-    foreach ($name in @('in_spotify.dll') + @(if ($Uninstall) { 'in_spotitube.dll' })) {
+    foreach ($name in @('in_spotify.dll') + @(if ($Uninstall) { 'in_spotitube.dll', 'ml_spotitube.dll' })) {
         $path = Join-Path $plugins $name
         if (Test-Path $path) {
             Remove-Item $path
@@ -78,6 +82,8 @@ try {
         Write-Host "Settings and the cached Spotify login stay in $env:APPDATA\in_spotitube; delete that folder to remove them."
     } else {
         Copy-Item $Dll $plugins -Force
+        if ($mlDll) { Copy-Item $mlDll $plugins -Force }
+        else { Write-Warning 'ml_spotitube.dll not found next to in_spotitube.dll; YouTube search in the Media Library is not installed.' }
         Write-Host "Installed to $plugins." -ForegroundColor Green
 
         $missing = @(

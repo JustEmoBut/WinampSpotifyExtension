@@ -1,3 +1,6 @@
+[workspace]
+members = ["ml_spotitube"]
+
 [package]
 name = "in_spotitube"
 version = "0.1.0"

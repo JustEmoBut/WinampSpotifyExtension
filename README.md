@@ -10,6 +10,7 @@ A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums, pl
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist; artist, album, year and track number are exposed as tags (YouTube: channel as artist, also for playlist entries)
+- YouTube search in the Media Library (*YouTube Search* in the tree): double-click or **Play** to play, **Enqueue** to add to the playlist
 - Album art: Spotify album covers and YouTube thumbnails, wherever Winamp shows art (e.g. Modern skins' album art panel, Media Library)
 - The next playlist entry is resolved while the current one plays, so it starts without the usual delay (not with shuffle)
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
@@ -75,9 +76,9 @@ Notes:
 
 ### 2. Install the plugin
 
-Download `in_spotitube.dll`, `install.ps1` and `install.bat` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then double-click **`install.bat`**.
+Download `in_spotitube.dll`, `ml_spotitube.dll`, `install.ps1` and `install.bat` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then double-click **`install.bat`**.
 
-The script finds Winamp (from the registry, or pass `-Winamp <folder>`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies the plugin to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
+The script finds Winamp (from the registry, or pass `-Winamp <folder>`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
 
 To uninstall, run `install.bat -Uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
 

@@ -14,9 +14,9 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup target add i686-pc-windows-msvc
       # --locked keeps the vergen 9.0.6 pin from Cargo.lock (see CLAUDE.md).
-      - run: cargo test --release --locked
-      - run: cargo build --release --locked
+      - run: cargo test --release --locked --workspace
+      - run: cargo build --release --locked --workspace
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" target/i686-pc-windows-msvc/release/in_spotitube.dll install.ps1 install.bat --generate-notes
+        run: gh release create "${{ github.ref_name }}" target/i686-pc-windows-msvc/release/in_spotitube.dll target/i686-pc-windows-msvc/release/ml_spotitube.dll install.ps1 install.bat --generate-notes

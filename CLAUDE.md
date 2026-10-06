@@ -4,7 +4,7 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 
 ## Build & install
 - Target is 32-bit `i686-pc-windows-msvc` (default via `.cargo/config.toml`); Winamp is a 32-bit process.
-- `cargo build --release`, `cargo test --release`.
+- Cargo workspace: `in_spotitube` (root) and `ml_spotitube/`. `cargo build --release --workspace`, `cargo test --release --workspace`; `-- --ignored` runs live tests (network, cached Spotify login).
 - Install: `install.bat` (wraps `install.ps1`, which finds Winamp via the registry, self-elevates and removes the pre-rename `in_spotify.dll`; `-Uninstall` removes the plugin). Release: push a `v*` tag; `.github/workflows/release.yml` builds and attaches the DLL + both scripts.
 - Renamed from `in_spotify`: `cache_dir()` moves `%APPDATA%\in_spotify` to `in_spotitube` once so cached credentials survive.
 - `Cargo.lock` pins `vergen` 9.0.6: librespot-core 0.8.0's build script breaks with vergen 9.1.0. Don't `cargo update` blindly.
@@ -13,6 +13,7 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 - `src/lib.rs`: Winamp ABI (`In_Module`/`Out_Module` per SDK `in2.h`/`out.h`), Spotify playback, shared output path (`write_pcm`), playlist IPC.
 - `src/youtube.rs`: link parsing, yt-dlp/ffmpeg process handling.
 - `src/albumart.rs`: album art provider registered through Winamp's Wasabi service API.
+- `ml_spotitube/`: Media Library plugin (`ml_spotitube.dll`, no librespot) with a YouTube search view built from raw Win32 controls, skinned via `ML_IPC_SKINWINDOW`. It only enqueues links; `in_spotitube.dll` plays them.
 - Settings: `%APPDATA%\in_spotitube\config.ini` (`spotify_bitrate`, `youtube_format`), opened by the plugin's Configure button.
 
 ## Winamp constraints (verified against Winamp 5.9 source)
