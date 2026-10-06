@@ -12,6 +12,8 @@ A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums and
 - Track titles and durations appear in the playlist
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
 - One-time browser login; credentials are cached
+- File info (Alt+3) shows title, length and link, and can open the link in the browser
+- If yt-dlp fails, it updates itself once per session (`yt-dlp -U`) and retries
 
 ## Requirements
 

@@ -4,6 +4,7 @@
 use std::io::{ErrorKind, Read};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use crate::{
@@ -33,6 +34,9 @@ pub struct Source {
     /// Direct googlevideo audio URL from yt-dlp.
     audio: String,
 }
+
+/// yt-dlp self-update (`-U`) is attempted at most once per Winamp session.
+static UPDATE_TRIED: AtomicBool = AtomicBool::new(false);
 
 /// Serializes background title lookups so a big playlist doesn't spawn dozens of yt-dlp processes.
 static TITLE_LOOKUP: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -94,21 +98,49 @@ fn yt_dlp_command() -> Command {
     cmd
 }
 
-/// Runs yt-dlp and returns its stdout lines, or a user-facing error.
+/// Runs yt-dlp on a single video and returns its stdout lines, or a user-facing error.
 fn yt_dlp(args: &[&str]) -> Result<Vec<String>, String> {
-    let output = yt_dlp_command().arg("--no-playlist").args(args).output();
-    let output = match output {
+    yt_dlp_raw(&[&["--no-playlist"], args].concat())
+}
+
+/// Runs yt-dlp; on failure, self-updates once per session and retries, since YouTube
+/// changes often break older yt-dlp versions.
+fn yt_dlp_raw(args: &[&str]) -> Result<Vec<String>, String> {
+    let first = run_yt_dlp(args);
+    match &first {
+        Err((_, true)) if self_update() => run_yt_dlp(args).map_err(|(msg, _)| msg),
+        _ => first.map_err(|(msg, _)| msg),
+    }
+}
+
+/// Error carries whether yt-dlp ran and failed (worth retrying after an update).
+fn run_yt_dlp(args: &[&str]) -> Result<Vec<String>, (String, bool)> {
+    let output = match yt_dlp_command().args(args).output() {
         Ok(o) => o,
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err("yt-dlp not found on PATH.\nInstall: winget install yt-dlp.yt-dlp\nThen restart Winamp.".into());
+            return Err(("yt-dlp not found on PATH.
+Install: winget install yt-dlp.yt-dlp
+Then restart Winamp.".into(), false));
         }
-        Err(e) => return Err(format!("yt-dlp failed to start: {e}")),
+        Err(e) => return Err((format!("yt-dlp failed to start: {e}"), false)),
     };
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("yt-dlp: {}", err.trim()));
+        return Err((format!("yt-dlp: {}", err.trim()), true));
     }
     Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).collect())
+}
+
+/// Runs `yt-dlp -U` the first time it's called; true if a newer version was installed.
+fn self_update() -> bool {
+    if UPDATE_TRIED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    match tool("yt-dlp").arg("-U").output() {
+        // "yt-dlp is up to date" means retrying won't help.
+        Ok(o) if o.status.success() => !String::from_utf8_lossy(&o.stdout).contains("up to date"),
+        _ => false,
+    }
 }
 
 /// yt-dlp prints duration in seconds (may be fractional) or "NA".
@@ -134,7 +166,7 @@ pub fn play(id: String, key: String, generation: u64) {
         return;
     }
     let length = duration_ms(duration);
-    LENGTH_MS.store(length, std::sync::atomic::Ordering::SeqCst);
+    LENGTH_MS.store(length, Ordering::SeqCst);
     store_title(&key, title.clone(), length);
     let source = Source { page: video_url(&id), audio: url.clone() };
     *STREAM.lock().unwrap() = Some(source.clone());
@@ -250,27 +282,16 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 pub fn expand(list_id: String, generation: u64) {
     let url = format!("https://www.youtube.com/playlist?list={list_id}");
     // Title last: it may itself contain '|'.
-    let lines = match yt_dlp_command()
-        .args(["--flat-playlist", "--print", "%(id)s|%(duration)s|%(title)s", &url])
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Ok(o) => {
-            show_error(&format!("yt-dlp: {}", String::from_utf8_lossy(&o.stderr).trim()));
-            return;
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            show_error("yt-dlp not found on PATH.\nInstall: winget install yt-dlp.yt-dlp\nThen restart Winamp.");
-            return;
-        }
-        Err(e) => {
-            show_error(&format!("yt-dlp failed to start: {e}"));
+    let lines = match yt_dlp_raw(&["--flat-playlist", "--print", "%(id)s|%(duration)s|%(title)s", &url]) {
+        Ok(l) => l,
+        Err(msg) => {
+            show_error(&msg);
             return;
         }
     };
 
     let mut entries = Vec::new();
-    for line in lines.lines() {
+    for line in &lines {
         let mut parts = line.splitn(3, '|');
         let (Some(id), Some(duration), Some(title)) = (parts.next(), parts.next(), parts.next()) else {
             continue;

@@ -38,6 +38,10 @@ const GETFILEINFO_TITLE_LENGTH: usize = 2048;
 const INFOBOX_UNCHANGED: i32 = 1;
 const WM_WA_MPEG_EOF: u32 = 0x0400 + 2; // WM_USER + 2
 const MB_ICONERROR: u32 = 0x10;
+const MB_YESNO: u32 = 0x04;
+const MB_ICONINFORMATION: u32 = 0x40;
+const IDYES: i32 = 6;
+const SW_SHOWNORMAL: i32 = 1;
 const WM_COPYDATA: u32 = 0x004A;
 const WM_WA_IPC: u32 = 0x0400; // WM_USER
 const IPC_STARTPLAY: isize = 102;
@@ -197,6 +201,13 @@ unsafe extern "system" {
     fn PostMessageW(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> i32;
     fn SendMessageW(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
+}
+
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn ShellExecuteW(
+        hwnd: Hwnd, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32,
+    ) -> *mut c_void;
 }
 
 #[link(name = "kernel32")]
@@ -694,7 +705,41 @@ unsafe extern "C" fn get_file_info(file: *const u16, title: *mut u16, length_ms:
     }
 }
 
-unsafe extern "C" fn info_box(_file: *const u16, _parent: Hwnd) -> i32 {
+/// Web link for an entry; Spotify entries (possibly path-mangled) map to open.spotify.com.
+fn web_url(key: &str) -> Option<String> {
+    if youtube::parse(key).is_some() {
+        return Some(key.to_owned());
+    }
+    let uri = parse_link(key)?;
+    Some(format!("https://open.spotify.com/{}/{}", uri.item_type(), uri.to_id().ok()?))
+}
+
+fn format_length(ms: i32) -> String {
+    if ms < 0 {
+        return "unknown".into();
+    }
+    let secs = ms / 1000;
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+unsafe extern "C" fn info_box(file: *const u16, parent: Hwnd) -> i32 {
+    let key = wide_to_string(file);
+    let Some(url) = web_url(&key) else { return INFOBOX_UNCHANGED };
+    let (title, len) = TITLES.lock().unwrap().get_or_insert_default().get(&key).cloned().unwrap_or((key, -1));
+    let text = to_wide(&format!("{title}
+
+Length: {}
+Link: {url}
+
+Open in browser?", format_length(len)));
+    let caption = to_wide("Track info");
+    let url = to_wide(&url);
+    let open = to_wide("open");
+    unsafe {
+        if MessageBoxW(parent, text.as_ptr(), caption.as_ptr(), MB_YESNO | MB_ICONINFORMATION) == IDYES {
+            ShellExecuteW(parent, open.as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+        }
+    }
     INFOBOX_UNCHANGED
 }
 
@@ -877,5 +922,18 @@ mod tests {
         ] {
             assert!(parse_link(s).is_none(), "{s}");
         }
+    }
+
+    #[test]
+    fn builds_web_urls() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        let want = format!("https://open.spotify.com/track/{id}");
+        assert_eq!(web_url(&format!(r"C:\x\spotify:track:{id}")), Some(want.clone()));
+        assert_eq!(web_url(&want), Some(want));
+        let yt = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        assert_eq!(web_url(yt).as_deref(), Some(yt));
+        assert_eq!(web_url(r"C:\music\a.mp3"), None);
+        assert_eq!(format_length(61_500), "1:01");
+        assert_eq!(format_length(-1), "unknown");
     }
 }
