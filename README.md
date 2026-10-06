@@ -75,15 +75,11 @@ Notes:
 
 ### 2. Install the plugin
 
-Download `in_spotitube.dll` and `install.ps1` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then in PowerShell:
+Download `in_spotitube.dll`, `install.ps1` and `install.bat` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then double-click **`install.bat`**.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
+The script finds Winamp (from the registry, or pass `-Winamp <folder>`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies the plugin to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
 
-The script asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies the plugin to `Winamp\Plugins` and offers to install yt-dlp via winget. Pass `-Winamp <folder>` if Winamp isn't in `C:\Program Files (x86)\Winamp`.
-
-To uninstall, delete `in_spotitube.dll` from the `Plugins` folder (and optionally `%APPDATA%\in_spotitube`).
+To uninstall, run `install.bat -Uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
 
 ### Building from source
 
@@ -94,10 +90,10 @@ git clone https://github.com/JustEmoBut/WinampSpotifyExtension.git
 cd WinampSpotifyExtension
 rustup target add i686-pc-windows-msvc
 cargo build --release
-.\install.ps1
+.\install.bat
 ```
 
-Output: `target\i686-pc-windows-msvc\release\in_spotitube.dll` (`install.ps1` picks it up automatically).
+Output: `target\i686-pc-windows-msvc\release\in_spotitube.dll` (the install script picks it up automatically).
 
 Releases are built by GitHub Actions when a `v*` tag is pushed.
 
