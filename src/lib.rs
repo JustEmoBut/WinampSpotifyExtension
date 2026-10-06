@@ -21,7 +21,7 @@ use librespot::metadata::{Album, Metadata, Playlist, Track};
 use librespot::oauth::OAuthClientBuilder;
 use librespot::playback::{
     audio_backend::{Sink, SinkResult},
-    config::PlayerConfig,
+    config::{Bitrate, PlayerConfig},
     convert::Converter,
     decoder::AudioPacket,
     mixer::NoOpVolume,
@@ -68,7 +68,18 @@ const BITS: i32 = 16;
 const BYTES_PER_FRAME: usize = (CHANNELS * BITS / 8) as usize;
 /// SA/VSAAddPCMData read at least this many frames (in2.h: "needs at least 576 samples").
 const VIS_MIN_FRAMES: usize = 576;
-const BITRATE_KBPS: i32 = 320;
+/// Shown for YouTube, whose real bitrate isn't known when the output opens.
+// ponytail: display only; print yt-dlp's `abr` and call SetInfo again if accuracy matters.
+const YOUTUBE_DISPLAY_KBPS: i32 = 160;
+const DEFAULT_SPOTIFY_KBPS: i32 = 320;
+const DEFAULT_YOUTUBE_FORMAT: &str = "bestaudio";
+const CONFIG_FILE: &str = "config.ini";
+const DEFAULT_CONFIG: &str = "; SpotiTube settings. Restart Winamp after changing spotify_bitrate.
+; Spotify quality in kbps: 96, 160 or 320.
+spotify_bitrate=320
+; yt-dlp format selector, e.g. bestaudio, bestaudio[abr<=128], worstaudio.
+youtube_format=bestaudio
+";
 const POLL: Duration = Duration::from_millis(10);
 const VOLUME_KEEP: i32 = -666; // SDK convention: re-apply current volume
 
@@ -150,7 +161,7 @@ static mut MODULE: InModule = InModule {
     file_extensions: b"\0\0".as_ptr(), // double-NUL: no extensions, URIs matched by IsOurFile
     is_seekable: 1,
     uses_output_plug: IN_MODULE_FLAG_USES_OUTPUT_PLUGIN,
-    config: about,
+    config,
     about,
     init,
     quit,
@@ -441,6 +452,50 @@ async fn expand(uri: &SpotifyUri) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Reads `key` from config.ini (`key=value` lines, `;` comments).
+fn config_value(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(cache_dir().join(CONFIG_FILE)).ok()?;
+    parse_config(&text, key)
+}
+
+fn parse_config(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with(';'))
+        .find_map(|l| Some(l.split_once('=').filter(|(k, _)| k.trim() == key)?.1.trim().to_owned()))
+        .filter(|v| !v.is_empty())
+}
+
+fn spotify_kbps() -> i32 {
+    config_value("spotify_bitrate").and_then(|v| v.parse().ok()).filter(|k| [96, 160, 320].contains(k)).unwrap_or(DEFAULT_SPOTIFY_KBPS)
+}
+
+fn spotify_bitrate() -> Bitrate {
+    match spotify_kbps() {
+        96 => Bitrate::Bitrate96,
+        160 => Bitrate::Bitrate160,
+        _ => Bitrate::Bitrate320,
+    }
+}
+
+pub(crate) fn youtube_format() -> String {
+    config_value("youtube_format").unwrap_or_else(|| DEFAULT_YOUTUBE_FORMAT.to_owned())
+}
+
+/// Plugin "Config" button: opens config.ini in the default editor, creating it first if needed.
+unsafe extern "C" fn config(parent: Hwnd) {
+    let dir = cache_dir();
+    let path = dir.join(CONFIG_FILE);
+    if !path.exists()
+        && let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, DEFAULT_CONFIG))
+    {
+        show_error(&format!("Could not create {}: {e}", path.display()));
+        return;
+    }
+    let file = to_wide(&path.to_string_lossy());
+    let open = to_wide("open");
+    unsafe { ShellExecuteW(parent, open.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+}
+
 fn cache_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     let dir = base.join("in_spotitube");
@@ -489,7 +544,8 @@ async fn engine() -> Result<(Session, Arc<Player>), String> {
         return Ok((e.session.clone(), e.player.clone()));
     }
     let session = connect().await?;
-    let player = Player::new(PlayerConfig::default(), session.clone(), Box::new(NoOpVolume), || {
+    let player_config = PlayerConfig { bitrate: spotify_bitrate(), ..PlayerConfig::default() };
+    let player = Player::new(player_config, session.clone(), Box::new(NoOpVolume), || {
         Box::new(WinampSink)
     });
     *PLAYER.lock().unwrap() = Some(player.clone());
@@ -760,7 +816,7 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
                 0
             }
             youtube::Link::Video(id) => {
-                let Some(generation) = open_output(&key) else { return 1 };
+                let Some(generation) = open_output(&key, YOUTUBE_DISPLAY_KBPS) else { return 1 };
                 std::thread::spawn(move || youtube::play(id, key, generation));
                 0
             }
@@ -777,7 +833,7 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
         return 0;
     }
 
-    let Some(generation) = open_output(&key) else { return 1 };
+    let Some(generation) = open_output(&key, spotify_kbps()) else { return 1 };
     // Login and loading run off the UI thread; first use opens the browser for OAuth.
     runtime().spawn(play_task(uri, key, generation));
     0
@@ -788,7 +844,7 @@ fn next_generation() -> u64 {
 }
 
 /// Opens Winamp's output for 44.1 kHz 16-bit stereo and starts a new track generation.
-fn open_output(key: &str) -> Option<u64> {
+fn open_output(key: &str, kbps: i32) -> Option<u64> {
     let o = out();
     let max_latency = unsafe { (o.open)(SAMPLE_RATE, CHANNELS, BITS, -1, -1) };
     if max_latency < 0 {
@@ -803,7 +859,7 @@ fn open_output(key: &str) -> Option<u64> {
             f(SAMPLE_RATE, CHANNELS);
         }
         if let Some(f) = m.set_info {
-            f(BITRATE_KBPS, SAMPLE_RATE / 1000, (CHANNELS == 2) as i32, 1);
+            f(kbps, SAMPLE_RATE / 1000, (CHANNELS == 2) as i32, 1);
         }
         (o.set_volume)(VOLUME_KEEP);
     }
@@ -935,5 +991,19 @@ mod tests {
         assert_eq!(web_url(r"C:\music\a.mp3"), None);
         assert_eq!(format_length(61_500), "1:01");
         assert_eq!(format_length(-1), "unknown");
+    }
+
+    #[test]
+    fn parses_config() {
+        let text = "; spotify_bitrate=96
+spotify_bitrate = 160
+youtube_format=bestaudio[abr<=128]
+empty=
+";
+        assert_eq!(parse_config(text, "spotify_bitrate").as_deref(), Some("160"));
+        assert_eq!(parse_config(text, "youtube_format").as_deref(), Some("bestaudio[abr<=128]"));
+        assert_eq!(parse_config(text, "empty"), None);
+        assert_eq!(parse_config(text, "missing"), None);
+        assert_eq!(parse_config(DEFAULT_CONFIG, "spotify_bitrate").as_deref(), Some("320"));
     }
 }

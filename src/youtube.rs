@@ -149,7 +149,8 @@ fn duration_ms(s: &str) -> i32 {
 }
 
 pub fn play(id: String, key: String, generation: u64) {
-    let lines = match yt_dlp(&["-f", "bestaudio", "--print", "title", "--print", "duration", "--print", "urls", &video_url(&id)]) {
+    let format = crate::youtube_format();
+    let lines = match yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "urls", &video_url(&id)]) {
         Ok(l) => l,
         Err(msg) => {
             if is_current(generation) {
@@ -188,7 +189,7 @@ pub fn stream(mut source: Source, start_ms: u32, generation: u64) {
     // a newly resolved URL usually works, so retry once before any audio went out.
     if let Outcome::Failed { started: false, stderr } = &outcome {
         if stderr.contains("403") && is_current(generation) {
-            if let Ok(lines) = yt_dlp(&["-f", "bestaudio", "--print", "urls", &source.page]) {
+            if let Ok(lines) = yt_dlp(&["-f", &crate::youtube_format(), "--print", "urls", &source.page]) {
                 if let Some(url) = lines.into_iter().next() {
                     source.audio = url;
                     if is_current(generation) {

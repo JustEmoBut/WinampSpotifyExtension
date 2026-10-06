@@ -14,6 +14,7 @@ A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums and
 - One-time browser login; credentials are cached
 - File info (Alt+3) shows title, length and link, and can open the link in the browser
 - If yt-dlp fails, it updates itself once per session (`yt-dlp -U`) and retries
+- Quality settings in `%APPDATA%\in_spotitube\config.ini` (Preferences → Plug-ins → Input → *Configure*): Spotify bitrate 96/160/320 kbps (default 320), yt-dlp format for YouTube
 
 ## Requirements
 
