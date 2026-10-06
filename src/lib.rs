@@ -1,7 +1,7 @@
 //! Winamp input plugin that plays Spotify tracks through librespot.
 //! Playlist entries: `spotify:{track,album,playlist}:<id>` or the matching open.spotify.com links.
 //! Also plays YouTube videos/playlists (audio only) through yt-dlp + ffmpeg, see `youtube`.
-//! Album/playlist entries are expanded into their tracks when played.
+//! Album/playlist/artist entries are expanded into their tracks when played.
 //! Struct layouts and IPC ids follow the Winamp SDK headers in2.h / out.h / wa_ipc.h / ipc_pe.h.
 
 mod youtube;
@@ -17,7 +17,7 @@ use librespot::core::{
     SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig,
     session::Session, spotify_id::SpotifyId,
 };
-use librespot::metadata::{Album, Metadata, Playlist, Track};
+use librespot::metadata::{Album, Artist, Metadata, Playlist, Track};
 use librespot::oauth::OAuthClientBuilder;
 use librespot::playback::{
     audio_backend::{Sink, SinkResult},
@@ -289,7 +289,7 @@ fn show_error(msg: &str) {
 }
 
 /// Accepts `spotify:<kind>:<id>` and `https://open.spotify.com/[intl-xx/]<kind>/<id>[?...]`
-/// for kind = track, album or playlist.
+/// for kind = track, album, playlist or artist.
 fn parse_link(s: &str) -> Option<SpotifyUri> {
     // Winamp saves a bare `spotify:` entry as a relative file path, so after a restart it comes
     // back as `<playlist dir>\spotify:...`; strip that prefix.
@@ -309,6 +309,7 @@ fn parse_link(s: &str) -> Option<SpotifyUri> {
         "track" => Some(SpotifyUri::Track { id }),
         "album" => Some(SpotifyUri::Album { id }),
         "playlist" => Some(SpotifyUri::Playlist { user: None, id }),
+        "artist" => Some(SpotifyUri::Artist { id }),
         _ => None,
     }
 }
@@ -386,7 +387,7 @@ fn hook_stock_plugins() {
 async fn expand_task(uri: SpotifyUri, generation: u64) {
     let tracks = match expand(&uri).await {
         Ok(t) if t.is_empty() => {
-            show_error("No playable tracks in this album/playlist.");
+            show_error("No playable tracks in this album/playlist/artist.");
             return;
         }
         Ok(t) => t,
@@ -433,6 +434,13 @@ async fn expand(uri: &SpotifyUri) -> Result<Vec<String>, String> {
             .tracks()
             .cloned()
             .collect(),
+        // An artist expands to its top tracks for the account's country.
+        SpotifyUri::Artist { .. } => Artist::get(&session, uri)
+            .await
+            .map_err(|e| format!("Artist lookup failed: {e}"))?
+            .top_tracks
+            .for_country(&session.country())
+            .0,
         _ => Playlist::get(&session, uri)
             .await
             .map_err(|e| format!("Playlist lookup failed: {e}"))?
@@ -723,7 +731,7 @@ fn write_pcm(pcm: &[i16], generation: Option<u64>) -> bool {
 
 unsafe extern "C" fn about(parent: Hwnd) {
     let text = to_wide(
-        "Spotify/YouTube input plugin\n\nAdd Spotify track, album or playlist links (open.spotify.com/... or spotify:...) or YouTube video/playlist links to the playlist.\nSpotify requires Premium (librespot). YouTube requires yt-dlp and ffmpeg on PATH.",
+        "Spotify/YouTube input plugin\n\nAdd Spotify track, album, playlist or artist links (open.spotify.com/... or spotify:...) or YouTube video/playlist links to the playlist.\nSpotify requires Premium (librespot). YouTube requires yt-dlp and ffmpeg on PATH.",
     );
     let caption = to_wide("About");
     unsafe { MessageBoxW(parent, text.as_ptr(), caption.as_ptr(), 0) };
@@ -970,10 +978,12 @@ mod tests {
         let pl = "https://open.spotify.com/playlist/0sKBl3lDo12p1HerjjAZap?si=460c80628d734f82";
         assert!(matches!(parse_link(pl), Some(SpotifyUri::Playlist { .. })));
         assert!(matches!(parse_link(&format!("spotify:album:{id}")), Some(SpotifyUri::Album { .. })));
+        let artist = "https://open.spotify.com/artist/0OdUWJ0sBjDrqHygGUXeCF";
+        assert!(matches!(parse_link(artist), Some(SpotifyUri::Artist { .. })));
+        assert_eq!(web_url(artist).as_deref(), Some(artist));
         for s in [
             "C:\\music\\a.mp3",
             "spotify:track:bad!",
-            "https://open.spotify.com/artist/4uLU6hMCjMI75M1A2tKUQC",
             "http://radio.example.com/stream",
         ] {
             assert!(parse_link(s).is_none(), "{s}");
@@ -1005,5 +1015,20 @@ empty=
         assert_eq!(parse_config(text, "empty"), None);
         assert_eq!(parse_config(text, "missing"), None);
         assert_eq!(parse_config(DEFAULT_CONFIG, "spotify_bitrate").as_deref(), Some("320"));
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    /// Needs cached Spotify credentials: `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore]
+    fn expands_artist_live() {
+        let uri = parse_link("https://open.spotify.com/artist/0OdUWJ0sBjDrqHygGUXeCF").unwrap();
+        let tracks = runtime().block_on(expand(&uri)).unwrap();
+        println!("{} tracks: {tracks:?}", tracks.len());
+        assert!(!tracks.is_empty());
     }
 }

@@ -1,12 +1,12 @@
 # Winamp SpotiTube
 
-A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums and playlists — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
+A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums, playlists and artists' top tracks — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
 
 > **Disclaimer:** librespot is an unofficial Spotify client, and streaming YouTube through yt-dlp is not permitted by YouTube's Terms of Service. Either may put your account at risk. Use at your own risk. This project only streams; it never saves audio to disk.
 
 ## Features
 
-- Paste `open.spotify.com` links or `spotify:` URIs into the playlist (track, album, playlist)
+- Paste `open.spotify.com` links or `spotify:` URIs into the playlist (track, album, playlist, artist → top tracks)
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist
