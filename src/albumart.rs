@@ -28,6 +28,11 @@ const FACTORY_GETTESTSTRING: i32 = 500;
 const FACTORY_SERVICENOTIFY: i32 = 600;
 // api_memmgr.h
 const MEMMGR_SYSMALLOC: i32 = 0;
+// api_syscb.h, callbacks/syscb.h, callbacks/metacb.h
+const SYSCB_ISSUECALLBACK: i32 = 30;
+/// MK4CC('m','e','t','a')
+const SYSCALLBACK_META: i32 = i32::from_be_bytes(*b"meta");
+const METADATA_ART_UPDATED: i32 = 20;
 // svc_albumArtProvider.h
 const PROVIDER_PROVIDERTYPE: i32 = 0;
 const PROVIDER_GETALBUMARTDATA: i32 = 10;
@@ -54,6 +59,7 @@ struct Guid {
 }
 
 const MEMMGR_GUID: Guid = Guid { data1: 0x000c_f46e, data2: 0x4df6, data3: 0x4a43, data4: [0xbb, 0xe7, 0x40, 0xe7, 0xa3, 0xea, 0x02, 0xed] };
+const SYSCB_GUID: Guid = Guid { data1: 0x57b7_a1b6, data2: 0x700e, data3: 0x44ff, data4: [0x9c, 0xb0, 0x70, 0xb9, 0x2b, 0xaf, 0x39, 0x59] };
 /// Identifies this provider to Winamp; generated once, never change it.
 const PROVIDER_GUID: Guid = Guid { data1: 0x9f81_1bec, data2: 0x62dd, data3: 0x4dd9, data4: [0xb8, 0xdb, 0x48, 0x7c, 0x2f, 0x63, 0xf1, 0xf7] };
 
@@ -68,6 +74,7 @@ static FACTORY: Dispatchable = Dispatchable { vtable: &(factory_dispatch as Disp
 static PROVIDER: Dispatchable = Dispatchable { vtable: &(provider_dispatch as DispatchFn) };
 static SERVICE: AtomicPtr<Dispatchable> = AtomicPtr::new(std::ptr::null_mut());
 static MEMMGR: AtomicPtr<Dispatchable> = AtomicPtr::new(std::ptr::null_mut());
+static SYSCB: AtomicPtr<Dispatchable> = AtomicPtr::new(std::ptr::null_mut());
 /// Last downloaded image; Winamp asks again for the same track (resize, skin redraw).
 // ponytail: single entry; a small LRU if the Media Library browses many covers.
 static LAST_IMAGE: Mutex<Option<(String, Vec<u8>)>> = Mutex::new(None);
@@ -105,24 +112,47 @@ fn service_call(msg: i32) {
     unsafe { call(svc, msg, (&raw mut ret).cast(), &mut [(&raw mut factory).cast()]) };
 }
 
-/// Winamp's api_memmgr: album art buffers must come from it, since Winamp frees them.
-fn memmgr() -> *mut Dispatchable {
-    let cached = MEMMGR.load(Ordering::SeqCst);
+/// A Wasabi API looked up by GUID once and cached in `cache`.
+fn api(guid: Guid, cache: &AtomicPtr<Dispatchable>) -> *mut Dispatchable {
+    let cached = cache.load(Ordering::SeqCst);
     let svc = SERVICE.load(Ordering::SeqCst);
     if !cached.is_null() || svc.is_null() {
         return cached;
     }
-    let mut guid = MEMMGR_GUID;
+    let mut guid = guid;
     let mut factory: *mut Dispatchable = std::ptr::null_mut();
     unsafe { call(svc, API_SERVICE_GETSERVICEBYGUID, (&raw mut factory).cast(), &mut [(&raw mut guid).cast()]) };
     if factory.is_null() {
         return factory;
     }
     let mut global_lock = 1i32;
-    let mut mm: *mut Dispatchable = std::ptr::null_mut();
-    unsafe { call(factory, FACTORY_GETINTERFACE, (&raw mut mm).cast(), &mut [(&raw mut global_lock).cast()]) };
-    MEMMGR.store(mm, Ordering::SeqCst);
-    mm
+    let mut iface: *mut Dispatchable = std::ptr::null_mut();
+    unsafe { call(factory, FACTORY_GETINTERFACE, (&raw mut iface).cast(), &mut [(&raw mut global_lock).cast()]) };
+    cache.store(iface, Ordering::SeqCst);
+    iface
+}
+
+/// Winamp's api_memmgr: album art buffers must come from it, since Winamp frees them.
+fn memmgr() -> *mut Dispatchable {
+    api(MEMMGR_GUID, &MEMMGR)
+}
+
+/// Tells Winamp the art for `file` changed, so skins ask for it again. Needed because Winamp
+/// asks when a track starts, before the Spotify cover URL is known.
+// ponytail: issued from a worker thread; gen_ff's art reload is thread-agnostic (threadpool +
+// APC to the main thread). Marshal to the UI thread if another consumer turns out not to be.
+pub fn art_updated(file: &str) {
+    let syscb = api(SYSCB_GUID, &SYSCB);
+    if syscb.is_null() {
+        return;
+    }
+    let wide = to_wide(file);
+    let (mut event, mut msg) = (SYSCALLBACK_META, METADATA_ART_UPDATED);
+    let (mut param1, mut param2) = (wide.as_ptr() as isize, 0isize);
+    let mut ret = 0i32;
+    let params: &mut [*mut c_void] =
+        &mut [(&raw mut event).cast(), (&raw mut msg).cast(), (&raw mut param1).cast(), (&raw mut param2).cast()];
+    unsafe { call(syscb, SYSCB_ISSUECALLBACK, (&raw mut ret).cast(), params) };
 }
 
 /// Copies `data` into a Winamp-owned buffer.

@@ -590,6 +590,9 @@ async fn fetch_title(session: &Session, uri: &SpotifyUri, key: &str) -> Result<i
         track: track.number.to_string(),
         cover: largest_cover(&track.album).unwrap_or_default(),
     });
+    if *CURRENT.lock().unwrap() == key {
+        albumart::art_updated(key);
+    }
     store_title(key, title, track.duration);
     Ok(track.duration)
 }
