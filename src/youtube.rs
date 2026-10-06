@@ -150,7 +150,7 @@ fn duration_ms(s: &str) -> i32 {
 
 pub fn play(id: String, key: String, generation: u64) {
     let format = crate::youtube_format();
-    let lines = match yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "urls", &video_url(&id)]) {
+    let lines = match yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "channel", "--print", "urls", &video_url(&id)]) {
         Ok(l) => l,
         Err(msg) => {
             if is_current(generation) {
@@ -159,7 +159,7 @@ pub fn play(id: String, key: String, generation: u64) {
             return;
         }
     };
-    let [title, duration, url, ..] = lines.as_slice() else {
+    let [title, duration, channel, url, ..] = lines.as_slice() else {
         show_error(&format!("yt-dlp: unexpected output for {id}"));
         return;
     };
@@ -168,6 +168,7 @@ pub fn play(id: String, key: String, generation: u64) {
     }
     let length = duration_ms(duration);
     LENGTH_MS.store(length, Ordering::SeqCst);
+    store_channel(&key, title, channel);
     store_title(&key, title.clone(), length);
     let source = Source { page: video_url(&id), audio: url.clone() };
     *STREAM.lock().unwrap() = Some(source.clone());
@@ -314,14 +315,23 @@ pub fn expand(list_id: String, generation: u64) {
     }
 }
 
+/// The channel stands in for the artist; yt-dlp prints "NA" when it's unknown.
+fn store_channel(key: &str, title: &str, channel: &str) {
+    let artist = if channel == "NA" { String::new() } else { channel.to_owned() };
+    crate::store_meta(key, crate::Meta { title: title.to_owned(), artist, ..Default::default() });
+}
+
 /// Looks up a video's title in the background (one yt-dlp at a time).
 pub fn request_title(key: &str, id: String) {
     mark_title_pending(key);
     let key = key.to_owned();
     std::thread::spawn(move || {
         let _one_at_a_time = TITLE_LOOKUP.lock().unwrap();
-        match yt_dlp(&["--skip-download", "--print", "title", "--print", "duration", &video_url(&id)]) {
-            Ok(lines) if lines.len() >= 2 => store_title(&key, lines[0].clone(), duration_ms(&lines[1])),
+        match yt_dlp(&["--skip-download", "--print", "title", "--print", "duration", "--print", "channel", &video_url(&id)]) {
+            Ok(lines) if lines.len() >= 3 => {
+                store_channel(&key, &lines[0], &lines[2]);
+                store_title(&key, lines[0].clone(), duration_ms(&lines[1]));
+            }
             // Leave the link as the title; Play() reports the actual error.
             _ => forget_title(&key),
         }

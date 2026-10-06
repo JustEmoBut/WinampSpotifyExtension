@@ -257,6 +257,17 @@ static PAUSED: AtomicBool = AtomicBool::new(false);
 static LENGTH_MS: AtomicI32 = AtomicI32::new(-1);
 static CURRENT: Mutex<String> = Mutex::new(String::new());
 static TITLES: Mutex<Option<HashMap<String, (String, i32)>>> = Mutex::new(None);
+/// Tag fields for Winamp's extended file info, keyed like `TITLES`.
+static META: Mutex<Option<HashMap<String, Meta>>> = Mutex::new(None);
+
+#[derive(Clone, Default)]
+struct Meta {
+    title: String,
+    artist: String,
+    album: String,
+    year: String,
+    track: String,
+}
 
 
 fn runtime() -> &'static Runtime {
@@ -566,6 +577,13 @@ async fn fetch_title(session: &Session, uri: &SpotifyUri, key: &str) -> Result<i
     let track = Track::get(session, uri).await.map_err(|e| e.to_string())?;
     let artists: Vec<_> = track.artists.0.iter().map(|a| a.name.as_str()).collect();
     let title = format!("{} - {}", artists.join(", "), track.name);
+    store_meta(key, Meta {
+        title: track.name.clone(),
+        artist: artists.join(", "),
+        album: track.album.name.clone(),
+        year: track.album.date.year().to_string(),
+        track: track.number.to_string(),
+    });
     store_title(key, title, track.duration);
     Ok(track.duration)
 }
@@ -580,6 +598,10 @@ fn store_title(key: &str, title: String, length_ms: i32) {
         SendMessageW(main, WM_WA_IPC, wide.as_ptr() as usize, IPC_REFRESHPLCACHE);
         SendMessageW(main, WM_WA_IPC, 0, IPC_UPDTITLE);
     }
+}
+
+fn store_meta(key: &str, meta: Meta) {
+    META.lock().unwrap().get_or_insert_default().insert(key.to_owned(), meta);
 }
 
 /// Placeholder marking a title lookup as pending so repeated GetFileInfo calls don't refetch.
@@ -807,6 +829,42 @@ Open in browser?", format_length(len)));
     INFOBOX_UNCHANGED
 }
 
+/// Winamp's tag lookup (`artist`, `album`, ...). Returns 0 for unknown keys or values so
+/// Winamp falls back to GetFileInfo's "Artist - Title".
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn winampGetExtendedFileInfoW(file: *const u16, data: *const u8, dest: *mut u16, dest_len: i32) -> i32 {
+    if data.is_null() || dest.is_null() || dest_len <= 0 {
+        return 0;
+    }
+    // SAFETY: Winamp passes a NUL-terminated ANSI key.
+    let field = unsafe { std::ffi::CStr::from_ptr(data.cast()) }.to_string_lossy().to_ascii_lowercase();
+    let key = wide_to_string(file);
+    let value = match field.as_str() {
+        "type" => Some("0".to_owned()), // audio
+        "length" => TITLES.lock().unwrap().get_or_insert_default().get(&key).map(|t| t.1).filter(|&l| l >= 0).map(|l| l.to_string()),
+        _ => META.lock().unwrap().get_or_insert_default().get(&key).and_then(|m| meta_field(m, &field)),
+    };
+    let Some(value) = value.filter(|v| !v.is_empty()) else { return 0 };
+    let wide: Vec<u16> = value.encode_utf16().take(dest_len as usize - 1).collect();
+    unsafe {
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), dest, wide.len());
+        *dest.add(wide.len()) = 0;
+    }
+    1
+}
+
+fn meta_field(m: &Meta, field: &str) -> Option<String> {
+    let v = match field {
+        "title" => &m.title,
+        "artist" | "albumartist" => &m.artist,
+        "album" => &m.album,
+        "year" => &m.year,
+        "track" => &m.track,
+        _ => return None,
+    };
+    Some(v.clone())
+}
+
 unsafe extern "C" fn is_our_file(file: *const u16) -> i32 {
     is_supported(&wide_to_string(file)) as i32
 }
@@ -1030,5 +1088,19 @@ mod live {
         let tracks = runtime().block_on(expand(&uri)).unwrap();
         println!("{} tracks: {tracks:?}", tracks.len());
         assert!(!tracks.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn fetches_track_meta_live() {
+        let key = "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC";
+        let uri = parse_link(key).unwrap();
+        runtime().block_on(async {
+            let (session, _) = engine().await.unwrap();
+            let track = Track::get(&session, &uri).await.unwrap();
+            let covers: Vec<_> = track.album.covers.iter().chain(track.album.cover_group.iter()).map(|c| (c.width, c.id.to_base16().unwrap())).collect();
+            println!("{} | {} | {} | #{} | covers {covers:?}", track.name, track.album.name, track.album.date.year(), track.number);
+            assert!(!track.album.name.is_empty());
+        });
     }
 }
