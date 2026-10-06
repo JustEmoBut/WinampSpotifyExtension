@@ -18,6 +18,8 @@ const CHUNK_BYTES: usize = 1152 * 4;
 const MS_PER_SEC: f64 = 1000.0;
 /// Auto-generated YouTube mixes/radios; yt-dlp can't flat-list them.
 const MIX_PREFIX: &str = "RD";
+/// Lines yt-dlp prints per playlist entry in `expand`.
+const PLAYLIST_FIELDS: usize = 4;
 
 pub enum Link {
     Video(String),
@@ -151,10 +153,11 @@ fn duration_ms(s: &str) -> i32 {
     s.trim().parse::<f64>().map_or(-1, |secs| (secs * MS_PER_SEC) as i32)
 }
 
-/// Title, duration, channel and audio URL of a video.
+/// Title, duration, channel, audio bitrate and audio URL of a video.
 fn resolve(id: &str) -> Result<Vec<String>, String> {
     let format = crate::youtube_format();
-    yt_dlp(&["-f", &format, "--print", "title", "--print", "duration", "--print", "channel", "--print", "urls", &video_url(id)])
+    let fields = ["title", "duration", "channel", "abr", "urls"].map(|f| ["--print", f]).concat();
+    yt_dlp(&[&["-f", format.as_str()][..], &fields, &[video_url(id).as_str()]].concat())
 }
 
 /// Resolves `id` in the background so a following `play` can skip yt-dlp.
@@ -175,7 +178,7 @@ pub fn play(id: String, key: String, generation: u64) {
             return;
         }
     };
-    let [title, duration, channel, url, ..] = lines.as_slice() else {
+    let [title, duration, channel, abr, url, ..] = lines.as_slice() else {
         show_error(&format!("yt-dlp: unexpected output for {id}"));
         return;
     };
@@ -186,6 +189,9 @@ pub fn play(id: String, key: String, generation: u64) {
     LENGTH_MS.store(length, Ordering::SeqCst);
     store_channel(&key, title, channel);
     store_title(&key, title.clone(), length);
+    if let Ok(kbps) = abr.parse::<f64>() {
+        crate::set_bitrate(kbps.round() as i32);
+    }
     let source = Source { page: video_url(&id), audio: url.clone() };
     *STREAM.lock().unwrap() = Some(source.clone());
     std::thread::spawn(crate::preload_next);
@@ -300,8 +306,8 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 /// Replaces the playlist entry with its videos (titles cached from the flat listing).
 pub fn expand(list_id: String, generation: u64) {
     let url = format!("https://www.youtube.com/playlist?list={list_id}");
-    // Title last: it may itself contain '|'.
-    let lines = match yt_dlp_raw(&["--flat-playlist", "--print", "%(id)s|%(duration)s|%(title)s", &url]) {
+    // One field per line: titles and channel names may contain any separator.
+    let lines = match yt_dlp_raw(&["--flat-playlist", "--print", "id", "--print", "duration", "--print", "channel", "--print", "title", &url]) {
         Ok(l) => l,
         Err(msg) => {
             show_error(&msg);
@@ -310,16 +316,13 @@ pub fn expand(list_id: String, generation: u64) {
     };
 
     let mut entries = Vec::new();
-    for line in &lines {
-        let mut parts = line.splitn(3, '|');
-        let (Some(id), Some(duration), Some(title)) = (parts.next(), parts.next(), parts.next()) else {
-            continue;
-        };
+    for [id, duration, channel, title] in lines.as_chunks::<PLAYLIST_FIELDS>().0 {
         if id.len() != 11 || !is_id(id) {
             continue;
         }
         let key = video_url(id);
         // Cache before inserting so the entries show titles immediately.
+        store_channel(&key, title, channel);
         crate::TITLES.lock().unwrap().get_or_insert_default().insert(key.clone(), (title.to_owned(), duration_ms(duration)));
         entries.push(key);
     }

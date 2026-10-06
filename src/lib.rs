@@ -71,8 +71,7 @@ const BITS: i32 = 16;
 const BYTES_PER_FRAME: usize = (CHANNELS * BITS / 8) as usize;
 /// SA/VSAAddPCMData read at least this many frames (in2.h: "needs at least 576 samples").
 const VIS_MIN_FRAMES: usize = 576;
-/// Shown for YouTube, whose real bitrate isn't known when the output opens.
-// ponytail: display only; print yt-dlp's `abr` and call SetInfo again if accuracy matters.
+/// Shown for YouTube until yt-dlp reports the stream's real bitrate (`set_bitrate`).
 const YOUTUBE_DISPLAY_KBPS: i32 = 160;
 const DEFAULT_SPOTIFY_KBPS: i32 = 320;
 const DEFAULT_YOUTUBE_FORMAT: &str = "bestaudio";
@@ -961,6 +960,14 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
     // Login and loading run off the UI thread; first use opens the browser for OAuth.
     runtime().spawn(play_task(uri, key, generation));
     0
+}
+
+/// Updates the bitrate Winamp displays for the open stream.
+fn set_bitrate(kbps: i32) {
+    let open = OUT_OPEN.lock().unwrap();
+    if let (true, Some(f)) = (*open, module().set_info) {
+        unsafe { f(kbps, SAMPLE_RATE / 1000, (CHANNELS == 2) as i32, 1) };
+    }
 }
 
 fn next_generation() -> u64 {
