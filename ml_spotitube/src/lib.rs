@@ -28,6 +28,11 @@ const SWS_USESKINCURSORS: u32 = 0x4;
 const SWLVS_FULLROWSELECT: u32 = 0x0001_0000;
 const SWLVS_DOUBLEBUFFER: u32 = 0x0002_0000;
 const SWLVS_ALTERNATEITEMS: u32 = 0x0004_0000;
+const ML_IPC_SKIN_WADLG_GETFUNC: isize = 0x600;
+/// ML_IPC_SKIN_WADLG_GETFUNC selector for `int WADlg_getColor(int idx)`.
+const WADLG_FUNC_GETCOLOR: usize = 1;
+/// wa_dlg.h: window background color index.
+const WADLG_WNDBG: i32 = 2;
 const SKIN_STYLE: u32 = SWS_USESKINFONT | SWS_USESKINCOLORS | SWS_USESKINCURSORS;
 
 const WM_WA_IPC: u32 = 0x0400;
@@ -38,6 +43,7 @@ const IPC_GETLISTLENGTH: isize = 124;
 
 const WM_CREATE: u32 = 0x0001;
 const WM_SIZE: u32 = 0x0005;
+const WM_ERASEBKGND: u32 = 0x0014;
 const WM_NOTIFY: u32 = 0x004E;
 const WM_GETDLGCODE: u32 = 0x0087;
 const WM_KEYDOWN: u32 = 0x0100;
@@ -61,6 +67,7 @@ const LVS_REPORT: u32 = 0x1;
 const LVS_SHOWSELALWAYS: u32 = 0x8;
 const LVM_DELETEALLITEMS: u32 = 0x1009;
 const LVM_GETNEXTITEM: u32 = 0x100C;
+const LVM_SETCOLUMNWIDTH: u32 = 0x101E;
 const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
 const LVM_INSERTITEMW: u32 = 0x104D;
 const LVM_INSERTCOLUMNW: u32 = 0x1061;
@@ -80,7 +87,12 @@ const ID_ENQUEUE: usize = 104;
 const MARGIN: i32 = 8;
 const ROW_HEIGHT: i32 = 24;
 const BUTTON_WIDTH: i32 = 80;
-const COLUMNS: [(&str, i32); 3] = [("Title", 420), ("Channel", 180), ("Length", 70)];
+const COLUMNS: [&str; 3] = ["Title", "Channel", "Length"];
+const LENGTH_COLUMN_WIDTH: i32 = 60;
+/// Room for the vertical scrollbar, so columns never force a horizontal one.
+const SCROLLBAR_ALLOWANCE: i32 = 24;
+/// Channel column's share of the width left after Length.
+const CHANNEL_SHARE_PERCENT: i32 = 30;
 const MAX_RESULTS: u32 = 30;
 const SEARCH_FIELDS: usize = 4;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -192,6 +204,12 @@ struct Rect {
     bottom: i32,
 }
 
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn CreateSolidBrush(color: u32) -> *mut c_void;
+    fn DeleteObject(object: *mut c_void) -> i32;
+}
+
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterClassW(class: *const WndClassW) -> u16;
@@ -212,6 +230,7 @@ unsafe extern "system" {
     fn GetWindowTextW(hwnd: Hwnd, text: *mut u16, max: i32) -> i32;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
     fn EnableWindow(hwnd: Hwnd, enable: i32) -> i32;
+    fn FillRect(hdc: *mut c_void, rect: *const Rect, brush: *mut c_void) -> i32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
@@ -366,6 +385,15 @@ unsafe extern "system" fn view_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
                 create_controls(hwnd);
                 0
             }
+            // The library doesn't clear the area of the previous view; paint the skin's background.
+            WM_ERASEBKGND => {
+                let mut r = Rect::default();
+                GetClientRect(hwnd, &mut r);
+                let brush = CreateSolidBrush(skin_color(WADLG_WNDBG));
+                FillRect(wparam as *mut c_void, &r, brush);
+                DeleteObject(brush);
+                1
+            }
             WM_SIZE => {
                 layout(hwnd);
                 0
@@ -422,9 +450,9 @@ unsafe fn create_controls(hwnd: Hwnd) {
         }
         let list = child(hwnd, "SysListView32", "", WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS, ID_LIST);
         SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_FULLROWSELECT as usize, LVS_EX_FULLROWSELECT);
-        for (i, (name, width)) in COLUMNS.iter().enumerate() {
+        for (i, name) in COLUMNS.iter().enumerate() {
             let text = to_wide(name);
-            let col = LvColumnW { mask: LVCF_TEXT | LVCF_WIDTH, cx: *width, text: text.as_ptr() as usize, ..Default::default() };
+            let col = LvColumnW { mask: LVCF_TEXT | LVCF_WIDTH, cx: LENGTH_COLUMN_WIDTH, text: text.as_ptr() as usize, ..Default::default() };
             SendMessageW(list, LVM_INSERTCOLUMNW, i, (&raw const col) as isize);
         }
         skin(list, SKINNEDWND_TYPE_LISTVIEW, SKIN_STYLE | SWLVS_FULLROWSELECT | SWLVS_DOUBLEBUFFER | SWLVS_ALTERNATEITEMS);
@@ -443,10 +471,34 @@ unsafe fn layout(hwnd: Hwnd) {
         MoveWindow(item(hwnd, ID_SEARCH), search_x, MARGIN, BUTTON_WIDTH, ROW_HEIGHT, 1);
         let list_y = 2 * MARGIN + ROW_HEIGHT;
         let bottom_y = h - MARGIN - ROW_HEIGHT;
-        MoveWindow(item(hwnd, ID_LIST), MARGIN, list_y, (w - 2 * MARGIN).max(0), (bottom_y - MARGIN - list_y).max(0), 1);
+        let list = item(hwnd, ID_LIST);
+        let list_w = (w - 2 * MARGIN).max(0);
+        MoveWindow(list, MARGIN, list_y, list_w, (bottom_y - MARGIN - list_y).max(0), 1);
+        let [title_w, channel_w, length_w] = column_widths(list_w);
+        for (i, width) in [title_w, channel_w, length_w].into_iter().enumerate() {
+            SendMessageW(list, LVM_SETCOLUMNWIDTH, i, width as isize);
+        }
         MoveWindow(item(hwnd, ID_PLAY), MARGIN, bottom_y, BUTTON_WIDTH, ROW_HEIGHT, 1);
         MoveWindow(item(hwnd, ID_ENQUEUE), 2 * MARGIN + BUTTON_WIDTH, bottom_y, BUTTON_WIDTH, ROW_HEIGHT, 1);
     }
+}
+
+/// Title takes what Channel and Length leave.
+fn column_widths(list_w: i32) -> [i32; 3] {
+    let rest = (list_w - SCROLLBAR_ALLOWANCE - LENGTH_COLUMN_WIDTH).max(0);
+    let channel = rest * CHANNEL_SHARE_PERCENT / 100;
+    [rest - channel, channel, LENGTH_COLUMN_WIDTH]
+}
+
+/// A color of the current Winamp skin (wa_dlg.h `WADLG_*` index) as a COLORREF.
+fn skin_color(index: i32) -> u32 {
+    let f = unsafe { SendMessageW(plugin().hwnd_library, WM_ML_IPC, WADLG_FUNC_GETCOLOR, ML_IPC_SKIN_WADLG_GETFUNC) };
+    if f == 0 {
+        return 0; // black, like the default skins
+    }
+    // SAFETY: gen_ml returns `int (*)(int)` for this selector.
+    let get_color: unsafe extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(f) };
+    unsafe { get_color(index) as u32 }
 }
 
 unsafe fn start_search(hwnd: Hwnd) {
@@ -592,6 +644,8 @@ mod tests {
         assert_eq!(videos[0].url(), "https://www.youtube.com/watch?v=jNQXAC9IVRw");
         assert_eq!(format_length(61), "1:01");
         assert_eq!(format_length(-1), "");
+        assert_eq!(column_widths(684), [420, 180, 60]);
+        assert_eq!(column_widths(0), [0, 0, 60]);
     }
 
     #[test]
