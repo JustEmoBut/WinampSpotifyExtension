@@ -4,6 +4,7 @@
 //! Album/playlist/artist entries are expanded into their tracks when played.
 //! Struct layouts and IPC ids follow the Winamp SDK headers in2.h / out.h / wa_ipc.h / ipc_pe.h.
 
+mod albumart;
 mod youtube;
 
 use std::collections::HashMap;
@@ -269,6 +270,8 @@ struct Meta {
     album: String,
     year: String,
     track: String,
+    /// Cover image URL (Spotify only; YouTube thumbnails derive from the video id).
+    cover: String,
 }
 
 
@@ -585,6 +588,7 @@ async fn fetch_title(session: &Session, uri: &SpotifyUri, key: &str) -> Result<i
         album: track.album.name.clone(),
         year: track.album.date.year().to_string(),
         track: track.number.to_string(),
+        cover: largest_cover(&track.album).unwrap_or_default(),
     });
     store_title(key, title, track.duration);
     Ok(track.duration)
@@ -600,6 +604,20 @@ fn store_title(key: &str, title: String, length_ms: i32) {
         SendMessageW(main, WM_WA_IPC, wide.as_ptr() as usize, IPC_REFRESHPLCACHE);
         SendMessageW(main, WM_WA_IPC, 0, IPC_UPDTITLE);
     }
+}
+
+fn largest_cover(album: &Album) -> Option<String> {
+    let image = album.covers.iter().chain(album.cover_group.iter()).max_by_key(|i| i.width)?;
+    Some(format!("https://i.scdn.co/image/{}", image.id.to_base16().ok()?))
+}
+
+/// Cover image URL for a playlist entry, if known.
+fn cover_url(key: &str) -> Option<String> {
+    if let Some(youtube::Link::Video(id)) = youtube::parse(key) {
+        return Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"));
+    }
+    let meta = META.lock().unwrap();
+    meta.as_ref()?.get(key).map(|m| m.cover.clone()).filter(|c| !c.is_empty())
 }
 
 fn store_meta(key: &str, meta: Meta) {
@@ -793,9 +811,11 @@ unsafe extern "C" fn about(parent: Hwnd) {
 
 unsafe extern "C" fn init() {
     hook_stock_plugins();
+    albumart::register();
 }
 
 unsafe extern "C" fn quit() {
+    albumart::deregister();
     if let Some(p) = player() {
         p.stop();
     }
