@@ -17,7 +17,7 @@ Two Winamp plugins: `in_spotitube.dll` plays Spotify tracks, albums, playlists a
 - One-time browser login; credentials are cached
 - File info (Alt+3) shows title, length and link, and can open the link in the browser
 - If yt-dlp fails, it updates itself once per session (`yt-dlp -U`) and retries
-- Quality settings in `%APPDATA%\in_spotitube\config.ini` (Preferences → Plug-ins → Input → *Configure*): Spotify bitrate 96/160/320 kbps (default 320), yt-dlp format for YouTube, update check on/off
+- Quality settings in `%APPDATA%\in_spotitube\config.ini` (Preferences → Plug-ins → Input → *Configure*): Spotify bitrate 96/160/320 kbps (default 320), Spotify loudness normalisation (default on), yt-dlp format for YouTube, update check on/off
 - One-click updates: on startup, a new release is offered once; accepting downloads it, verifies its SHA-256 against GitHub's, and runs its installer (one administrator prompt; Winamp restarts after you close it). Release builds only; `check_updates=0` turns it off
 
 ## Requirements

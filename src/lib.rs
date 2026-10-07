@@ -81,9 +81,11 @@ const YOUTUBE_DISPLAY_KBPS: i32 = 160;
 const DEFAULT_SPOTIFY_KBPS: i32 = 320;
 const DEFAULT_YOUTUBE_FORMAT: &str = "bestaudio";
 const CONFIG_FILE: &str = "config.ini";
-const DEFAULT_CONFIG: &str = "; SpotiTube settings. Restart Winamp after changing spotify_bitrate.
+const DEFAULT_CONFIG: &str = "; SpotiTube settings. Restart Winamp after changing the spotify_ settings.
 ; Spotify quality in kbps: 96, 160 or 320.
 spotify_bitrate=320
+; 1 evens out loudness between Spotify tracks (like the Spotify app), 0 plays them as mastered.
+spotify_normalisation=1
 ; yt-dlp format selector, e.g. bestaudio, bestaudio[abr<=128], worstaudio.
 youtube_format=bestaudio
 ; 0 turns off the check for new releases on startup.
@@ -581,7 +583,11 @@ async fn engine() -> Result<(Session, Arc<Player>), String> {
         return Ok((e.session.clone(), e.player.clone()));
     }
     let session = connect().await?;
-    let player_config = PlayerConfig { bitrate: spotify_bitrate(), ..PlayerConfig::default() };
+    let player_config = PlayerConfig {
+        bitrate: spotify_bitrate(),
+        normalisation: config_value("spotify_normalisation").is_none_or(|v| v != "0"),
+        ..PlayerConfig::default()
+    };
     let player = Player::new(player_config, session.clone(), Box::new(NoOpVolume), || {
         Box::new(WinampSink)
     });
