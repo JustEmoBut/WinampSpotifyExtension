@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 type Hwnd = *mut c_void;
 type WndProc = unsafe extern "system" fn(Hwnd, u32, usize, isize) -> isize;
@@ -18,6 +18,16 @@ const WM_ML_IPC: u32 = 0x0400 + 0x1000; // WM_USER + 0x1000
 const ML_MSG_TREE_ONCREATEVIEW: i32 = 0x100;
 const ML_IPC_TREEITEM_ADDW: isize = 0x133;
 const ML_IPC_SKINWINDOW: isize = 0x1400;
+const ML_IPC_IMAGELIST_ADD: isize = 0x1260 + 5;
+const ML_IPC_NAVCTRL_GETIMAGELIST: isize = 0x1280 + 7;
+const SRC_TYPE_HBITMAP: u32 = 0x03;
+const ISF_FORCE_BPP: u32 = 0x10;
+/// Tree icon: drawn white on black, MLIF_FILTER1 maps it to the skin's item colors like the
+/// stock icons. The tag (anything but the reserved MLTREEIMAGE_* values 0-5) links it to the item.
+const ICON_SIZE: i32 = 16;
+const ICON_BPP: u16 = 24;
+const ICON_TAG: isize = 0x5354_5953;
+const DIB_RGB_COLORS: u32 = 0;
 const SKINNEDWND_TYPE_WINDOW: u32 = 0x1;
 const SKINNEDWND_TYPE_LISTVIEW: u32 = 0x5;
 const SKINNEDWND_TYPE_BUTTON: u32 = 0x6;
@@ -127,6 +137,59 @@ struct MlTreeItemW {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct Guid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+/// {8A054D1F-E38E-4cc0-A78A-F216F059F57E}
+const MLIF_FILTER1_UID: Guid = Guid { data1: 0x8a05_4d1f, data2: 0xe38e, data3: 0x4cc0, data4: [0xa7, 0x8a, 0xf2, 0x16, 0xf0, 0x59, 0xf5, 0x7e] };
+
+#[repr(C)]
+struct MlImageSource {
+    size: i32,
+    instance: *mut c_void,
+    name: *const u16,
+    bpp: u32,
+    x_src: i32,
+    y_src: i32,
+    cx_src: i32,
+    cy_src: i32,
+    cx_dst: i32,
+    cy_dst: i32,
+    source_type: u32,
+    flags: u32,
+}
+
+#[repr(C)]
+struct MlImageListItem {
+    size: i32,
+    image_list: *mut c_void,
+    source: *mut MlImageSource,
+    filter: Guid,
+    tag: isize,
+    index: i32,
+}
+
+#[repr(C)]
+struct BitmapInfoHeader {
+    size: u32,
+    width: i32,
+    height: i32,
+    planes: u16,
+    bit_count: u16,
+    compression: u32,
+    size_image: u32,
+    x_ppm: i32,
+    y_ppm: i32,
+    clr_used: u32,
+    clr_important: u32,
+}
+
+#[repr(C)]
 struct MlSkinWindow {
     hwnd: Hwnd,
     skin_type: u32,
@@ -211,6 +274,9 @@ struct Rect {
 unsafe extern "system" {
     fn CreateSolidBrush(color: u32) -> *mut c_void;
     fn DeleteObject(object: *mut c_void) -> i32;
+    fn CreateDIBSection(
+        hdc: *mut c_void, info: *const BitmapInfoHeader, usage: u32, bits: *mut *mut u8, section: *mut c_void, offset: u32,
+    ) -> *mut c_void;
 }
 
 #[link(name = "user32")]
@@ -274,6 +340,10 @@ static SEARCH_ID: AtomicU64 = AtomicU64::new(0);
 type Pending = Option<(u64, Result<Vec<Video>, String>)>;
 static PENDING: Mutex<Pending> = Mutex::new(None);
 static RESULTS: Mutex<Vec<Video>> = Mutex::new(Vec::new());
+/// Last query, restored when the view is recreated.
+static QUERY: Mutex<String> = Mutex::new(String::new());
+/// The tree icon bitmap; the library copies it on each (re)load, so it lives until quit.
+static ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[derive(Clone, Debug, PartialEq)]
 struct Video {
@@ -333,7 +403,7 @@ unsafe extern "C" fn init() -> i32 {
         title: TREE_TITLE.as_ptr().cast_mut(),
         title_len: 0,
         has_children: 0,
-        image_index: 0,
+        image_index: if add_tree_icon() { ICON_TAG as i32 } else { 0 },
     };
     unsafe {
         if RegisterClassW(&class) == 0 {
@@ -346,7 +416,87 @@ unsafe extern "C" fn init() -> i32 {
 }
 
 unsafe extern "C" fn quit() {
-    unsafe { UnregisterClassW(CLASS_NAME.as_ptr(), plugin().h_dll_instance) };
+    unsafe {
+        UnregisterClassW(CLASS_NAME.as_ptr(), plugin().h_dll_instance);
+        let icon = ICON.swap(std::ptr::null_mut(), Ordering::SeqCst);
+        if !icon.is_null() {
+            DeleteObject(icon);
+        }
+    }
+}
+
+/// A play button in a rounded box, YouTube-style.
+fn icon_pixel(x: i32, y: i32) -> bool {
+    let in_box = (1..=14).contains(&x) && (3..=12).contains(&y);
+    let corner = (x == 1 || x == 14) && (y == 3 || y == 12);
+    // Right-pointing triangle, base at x=6 (rows 5-10), apex at x=10; measured in half pixels.
+    let dy = (2 * y + 1 - ICON_SIZE).abs();
+    let in_triangle = (6..=10).contains(&x) && dy * 5 <= (11 - x) * 6;
+    in_box && !corner && !in_triangle
+}
+
+/// Adds the tree icon to the navigation image list; true on success.
+fn add_tree_icon() -> bool {
+    let header = BitmapInfoHeader {
+        size: size_of::<BitmapInfoHeader>() as u32,
+        width: ICON_SIZE,
+        height: -ICON_SIZE, // top-down
+        planes: 1,
+        bit_count: ICON_BPP,
+        compression: 0,
+        size_image: 0,
+        x_ppm: 0,
+        y_ppm: 0,
+        clr_used: 0,
+        clr_important: 0,
+    };
+    let mut bits: *mut u8 = std::ptr::null_mut();
+    unsafe {
+        let bitmap = CreateDIBSection(std::ptr::null_mut(), &header, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        if bitmap.is_null() || bits.is_null() {
+            return false;
+        }
+        // 16 px * 3 bytes = 48: rows are already DWORD-aligned.
+        let row_bytes = (ICON_SIZE * 3) as usize;
+        let pixels = std::slice::from_raw_parts_mut(bits, row_bytes * ICON_SIZE as usize);
+        for y in 0..ICON_SIZE {
+            for x in 0..ICON_SIZE {
+                let v = if icon_pixel(x, y) { 0xFF } else { 0x00 };
+                let i = y as usize * row_bytes + x as usize * 3;
+                pixels[i..i + 3].fill(v);
+            }
+        }
+        ICON.store(bitmap, Ordering::SeqCst);
+
+        let library = plugin().hwnd_library;
+        let image_list = SendMessageW(library, WM_ML_IPC, 0, ML_IPC_NAVCTRL_GETIMAGELIST) as *mut c_void;
+        if image_list.is_null() {
+            return false;
+        }
+        let mut source = MlImageSource {
+            size: size_of::<MlImageSource>() as i32,
+            instance: std::ptr::null_mut(),
+            name: bitmap.cast(),
+            bpp: ICON_BPP as u32,
+            x_src: 0,
+            y_src: 0,
+            cx_src: 0,
+            cy_src: 0,
+            cx_dst: 0,
+            cy_dst: 0,
+            source_type: SRC_TYPE_HBITMAP,
+            flags: ISF_FORCE_BPP,
+        };
+        let mut item = MlImageListItem {
+            size: size_of::<MlImageListItem>() as i32,
+            image_list,
+            source: &mut source,
+            filter: MLIF_FILTER1_UID,
+            tag: ICON_TAG,
+            index: 0,
+        };
+        SendMessageW(library, WM_ML_IPC, (&raw mut item) as usize, ML_IPC_IMAGELIST_ADD) >= 0
+    }
 }
 
 unsafe extern "C" fn message_proc(msg: i32, param1: isize, param2: isize, _param3: isize) -> isize {
@@ -447,7 +597,7 @@ unsafe extern "system" fn edit_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
 unsafe fn create_controls(hwnd: Hwnd) {
     unsafe {
         skin(hwnd, SKINNEDWND_TYPE_WINDOW, SKIN_STYLE);
-        let edit = child(hwnd, "Edit", "", WS_TABSTOP | ES_AUTOHSCROLL, ID_QUERY);
+        let edit = child(hwnd, "Edit", &QUERY.lock().unwrap(), WS_TABSTOP | ES_AUTOHSCROLL, ID_QUERY);
         skin(edit, SKINNEDWND_TYPE_EDIT, SKIN_STYLE);
         EDIT_PROC.store(SetWindowLongW(edit, GWLP_WNDPROC, edit_proc as WndProc as usize as isize), Ordering::SeqCst);
         for (text, id) in [("Search", ID_SEARCH), ("Play", ID_PLAY), ("Enqueue", ID_ENQUEUE)] {
@@ -513,6 +663,7 @@ unsafe fn start_search(hwnd: Hwnd) {
     if query.is_empty() {
         return;
     }
+    QUERY.lock().unwrap().clone_from(&query);
     let id = SEARCH_ID.fetch_add(1, Ordering::SeqCst) + 1;
     set_searching(hwnd, true);
     let target = hwnd as usize;
@@ -652,6 +803,12 @@ mod tests {
         assert_eq!(format_length(-1), "");
         assert_eq!(column_widths(684), [420, 180, 60]);
         assert_eq!(column_widths(0), [0, 0, 60]);
+        let art: Vec<String> = (0..ICON_SIZE)
+            .map(|y| (0..ICON_SIZE).map(|x| if icon_pixel(x, y) { '#' } else { '.' }).collect())
+            .collect();
+        println!("{}", art.join("
+"));
+        assert!(icon_pixel(3, 7) && !icon_pixel(7, 7) && !icon_pixel(1, 3) && !icon_pixel(0, 0));
     }
 
     #[test]
