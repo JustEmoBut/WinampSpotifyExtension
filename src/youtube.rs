@@ -131,9 +131,29 @@ Then restart Winamp.".into(), false));
     };
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err((format!("yt-dlp: {}", err.trim()), true));
+        return Err((friendly_error(err.trim()), true));
     }
     Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).collect())
+}
+
+/// Common failures, matched on the reason text YouTube sends (yt-dlp passes it through).
+const KNOWN_ERRORS: &[(&str, &str)] = &[
+    ("confirm your age", "This video is age-restricted; YouTube only plays it for signed-in users."),
+    ("not a bot", "YouTube asked to confirm you're not a bot. Try again later."),
+    ("rate-limited", "YouTube is limiting requests from this connection for up to an hour. Try again later."),
+    ("Private video", "This video is private."),
+    ("not made this video available in your country", "This video isn't available in your country."),
+    ("geo restriction", "This video isn't available in your country."),
+    ("removed for violating", "This video was removed by YouTube."),
+    ("video is unavailable", "This video is unavailable (removed, or the link is wrong)."),
+];
+
+/// A short explanation for known yt-dlp failures, with yt-dlp's own message below it.
+fn friendly_error(stderr: &str) -> String {
+    match KNOWN_ERRORS.iter().find(|(needle, _)| stderr.contains(needle)) {
+        Some((_, text)) => format!("{text}\n\nyt-dlp: {stderr}"),
+        None => format!("yt-dlp: {stderr}"),
+    }
 }
 
 /// Runs `yt-dlp -U` the first time it's called; true if a newer version was installed.
@@ -396,6 +416,16 @@ mod tests {
         ] {
             assert!(parse(s).is_none(), "{s}");
         }
+    }
+
+    #[test]
+    fn explains_known_errors() {
+        // Real yt-dlp 2026.08.19 output.
+        let gone = "ERROR: [youtube] aaaaaaaaaaa: This video is unavailable";
+        assert_eq!(friendly_error(gone), format!("This video is unavailable (removed, or the link is wrong).\n\nyt-dlp: {gone}"));
+        let age = "ERROR: [youtube] 07FYdnEawAQ: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication.";
+        assert!(friendly_error(age).starts_with("This video is age-restricted"));
+        assert_eq!(friendly_error("ERROR: something new"), "yt-dlp: ERROR: something new");
     }
 
     #[test]
