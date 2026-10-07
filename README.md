@@ -10,13 +10,13 @@ Two Winamp plugins: `in_spotitube.dll` plays Spotify tracks, albums, playlists a
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist; artist, album, year and track number are exposed as tags (YouTube: channel as artist, also for playlist entries)
-- YouTube search in the Media Library (*YouTube Search* in the tree): type and press Enter, then double-click or **Play** to play, **Enqueue** to add to the playlist; right-click for *Open in browser* and *Enqueue all results*
+- YouTube search in the Media Library (*YouTube Search* in the tree): type and press Enter, then double-click or **Play** to play, **Enqueue** to add to the playlist, **More** for the next 30 results; right-click for *Open in browser* and *Enqueue all results*
 - Album art: Spotify album covers and YouTube thumbnails, wherever Winamp shows art (e.g. Modern skins' album art panel, Media Library)
 - The next playlist entry is resolved while the current one plays, so it starts without the usual delay (not with shuffle)
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
 - One-time browser login; credentials are cached
 - File info (Alt+3) shows title, length and link, and can open the link in the browser
-- If yt-dlp fails, it updates itself once per session (`yt-dlp -U`) and retries
+- If yt-dlp fails, it updates itself once per session (`yt-dlp -U`) and retries (playback and YouTube Search)
 - Quality settings in `%APPDATA%\in_spotitube\config.ini` (Preferences → Plug-ins → Input → *Configure*): Spotify bitrate 96/160/320 kbps (default 320), Spotify loudness normalisation (default on), yt-dlp format for YouTube, update check on/off
 - One-click updates: on startup, a new release is offered once; accepting downloads it, verifies its SHA-256 against GitHub's, and runs its installer, which closes Winamp, installs and restarts it (Windows may ask for administrator rights). Release builds only; `check_updates=0` turns it off
 
@@ -38,7 +38,7 @@ Download `SpotiTube-<version>.zip` from the [latest release](https://github.com/
 
 The script:
 
-- finds Winamp (from the registry, or pass `/winamp "<folder>"`). If Winamp isn't installed, it runs a Winamp setup (`winamp*.exe`) found next to `install.bat` or in your Downloads folder silently, so a fresh PC only needs the [Winamp setup](https://www.winamp.com) downloaded;
+- finds Winamp (from the registry, or pass `/winamp "<folder>"`; a leftover folder without `winamp.exe` doesn't count). If Winamp isn't installed, it runs a Winamp setup (`winamp*.exe`) found next to `install.bat` or in your Downloads folder silently, so a fresh PC only needs the [Winamp setup](https://www.winamp.com) downloaded;
 - asks for administrator rights and waits for Winamp to close;
 - [fixes Winamp's revoked certificate](#2-winamps-revoked-certificate) on `elevator.exe`;
 - removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, installs yt-dlp/ffmpeg via winget if they're missing (accepting winget's source and package agreements) and offers to restart Winamp.
