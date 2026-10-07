@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicIsize, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 type Hwnd = *mut c_void;
 type WndProc = unsafe extern "system" fn(Hwnd, u32, usize, isize) -> isize;
@@ -107,6 +107,7 @@ const ID_PLAY: usize = 103;
 const ID_ENQUEUE: usize = 104;
 const ID_OPEN_BROWSER: usize = 105;
 const ID_ENQUEUE_ALL: usize = 106;
+const ID_MORE: usize = 107;
 
 const MARGIN: i32 = 8;
 const ROW_HEIGHT: i32 = 24;
@@ -381,8 +382,10 @@ static TREE_ID: AtomicUsize = AtomicUsize::new(0);
 static EDIT_PROC: AtomicIsize = AtomicIsize::new(0);
 /// Latest search; results of older searches are dropped.
 static SEARCH_ID: AtomicU64 = AtomicU64::new(0);
-/// Finished search (id, result) waiting for the view thread to pick it up.
-type Pending = Option<(u64, Result<Vec<Video>, String>)>;
+/// yt-dlp self-update (`-U`) is attempted at most once per Winamp session.
+static UPDATE_TRIED: AtomicBool = AtomicBool::new(false);
+/// Finished search (id, first result index, result) waiting for the view thread to pick it up.
+type Pending = Option<(u64, usize, Result<Vec<Video>, String>)>;
 static PENDING: Mutex<Pending> = Mutex::new(None);
 static RESULTS: Mutex<Vec<Video>> = Mutex::new(Vec::new());
 /// Last query, restored when the view is recreated.
@@ -601,6 +604,7 @@ unsafe extern "system" fn view_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
             WM_COMMAND if wparam >> 16 == BN_CLICKED => {
                 match wparam & 0xFFFF {
                     ID_SEARCH => start_search(hwnd),
+                    ID_MORE => more_results(hwnd),
                     ID_PLAY => add_videos(&selected(hwnd), true),
                     ID_ENQUEUE => add_videos(&selected(hwnd), false),
                     _ => {}
@@ -647,7 +651,7 @@ unsafe fn create_controls(hwnd: Hwnd) {
         let edit = child(hwnd, "Edit", &QUERY.lock().unwrap(), WS_TABSTOP | ES_AUTOHSCROLL, ID_QUERY);
         skin(edit, SKINNEDWND_TYPE_EDIT, SKIN_STYLE);
         EDIT_PROC.store(SetWindowLongW(edit, GWLP_WNDPROC, edit_proc as WndProc as usize as isize), Ordering::SeqCst);
-        for (text, id) in [("Search", ID_SEARCH), ("Play", ID_PLAY), ("Enqueue", ID_ENQUEUE)] {
+        for (text, id) in [("Search", ID_SEARCH), ("Play", ID_PLAY), ("Enqueue", ID_ENQUEUE), ("More", ID_MORE)] {
             skin(child(hwnd, "Button", text, WS_TABSTOP, id), SKINNEDWND_TYPE_BUTTON, SKIN_STYLE);
         }
         let list = child(hwnd, "SysListView32", "", WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS, ID_LIST);
@@ -662,7 +666,7 @@ unsafe fn create_controls(hwnd: Hwnd) {
     }
 }
 
-/// Query row on top, list in the middle, Play/Enqueue at the bottom.
+/// Query row on top, list in the middle, Play/Enqueue/More at the bottom.
 unsafe fn layout(hwnd: Hwnd) {
     let mut r = Rect::default();
     unsafe {
@@ -682,6 +686,7 @@ unsafe fn layout(hwnd: Hwnd) {
         }
         MoveWindow(item(hwnd, ID_PLAY), MARGIN, bottom_y, BUTTON_WIDTH, ROW_HEIGHT, 1);
         MoveWindow(item(hwnd, ID_ENQUEUE), 2 * MARGIN + BUTTON_WIDTH, bottom_y, BUTTON_WIDTH, ROW_HEIGHT, 1);
+        MoveWindow(item(hwnd, ID_MORE), 3 * MARGIN + 2 * BUTTON_WIDTH, bottom_y, BUTTON_WIDTH, ROW_HEIGHT, 1);
     }
 }
 
@@ -711,12 +716,26 @@ unsafe fn start_search(hwnd: Hwnd) {
         return;
     }
     QUERY.lock().unwrap().clone_from(&query);
+    run_search(hwnd, query, 0);
+}
+
+/// Fetches the next page of the last query and appends it to the list.
+fn more_results(hwnd: Hwnd) {
+    let query = QUERY.lock().unwrap().clone();
+    let start = RESULTS.lock().unwrap().len();
+    if !query.is_empty() && start > 0 {
+        run_search(hwnd, query, start);
+    }
+}
+
+/// Searches in the background from result index `start` (0 replaces the list, otherwise appends).
+fn run_search(hwnd: Hwnd, query: String, start: usize) {
     let id = SEARCH_ID.fetch_add(1, Ordering::SeqCst) + 1;
     set_searching(hwnd, true);
     let target = hwnd as usize;
     std::thread::spawn(move || {
-        let result = search(&query);
-        *PENDING.lock().unwrap() = Some((id, result));
+        let result = search(&query, start);
+        *PENDING.lock().unwrap() = Some((id, start, result));
         // Fails harmlessly if the view was closed meanwhile.
         unsafe { PostMessageW(target as Hwnd, WM_SEARCH_DONE, id as usize, 0) };
     });
@@ -728,17 +747,25 @@ fn set_searching(hwnd: Hwnd, searching: bool) {
     unsafe {
         SetWindowTextW(button, text.as_ptr());
         EnableWindow(button, (!searching) as i32);
+        EnableWindow(item(hwnd, ID_MORE), (!searching) as i32);
     }
 }
 
 unsafe fn show_results(hwnd: Hwnd, id: u64) {
-    let pending = PENDING.lock().unwrap().take_if(|(p, _)| *p == id);
-    let Some((_, result)) = pending else { return };
+    let pending = PENDING.lock().unwrap().take_if(|(p, _, _)| *p == id);
+    let Some((_, start, result)) = pending else { return };
     set_searching(hwnd, false);
     match result {
         Ok(videos) => {
-            unsafe { fill_list(hwnd, &videos) };
-            *RESULTS.lock().unwrap() = videos;
+            let mut results = RESULTS.lock().unwrap();
+            results.truncate(start);
+            // YouTube's ranking shifts between requests, so a later page can repeat videos.
+            for v in videos {
+                if !results.iter().any(|r| r.id == v.id) {
+                    results.push(v);
+                }
+            }
+            unsafe { fill_list(hwnd, &results) };
         }
         Err(msg) => show_error(hwnd, &msg),
     }
@@ -852,24 +879,49 @@ fn add_videos(videos: &[Video], play: bool) {
     }
 }
 
-/// Runs `yt-dlp ytsearchN:<query>`; one field per line since titles may contain any separator.
-fn search(query: &str) -> Result<Vec<Video>, String> {
+/// Runs `yt-dlp ytsearchN:<query>` for results `start+1..=start+MAX_RESULTS`; one field per
+/// line since titles may contain any separator.
+/// On failure, self-updates yt-dlp once per session and retries, since YouTube changes often
+/// break older versions (same policy as in_spotitube's playback).
+fn search(query: &str, start: usize) -> Result<Vec<Video>, String> {
+    match run_search_once(query, start) {
+        Err((_, true)) if self_update() => run_search_once(query, start).map_err(|(msg, _)| msg),
+        result => result.map_err(|(msg, _)| msg),
+    }
+}
+
+/// Runs `yt-dlp -U` the first time it's called; true if a newer version was installed.
+fn self_update() -> bool {
+    if UPDATE_TRIED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    match Command::new("yt-dlp").creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null()).arg("-U").output() {
+        // "yt-dlp is up to date" means retrying won't help.
+        Ok(o) if o.status.success() => !String::from_utf8_lossy(&o.stdout).contains("up to date"),
+        _ => false,
+    }
+}
+
+/// Error carries whether yt-dlp ran and failed (worth retrying after an update).
+fn run_search_once(query: &str, start: usize) -> Result<Vec<Video>, (String, bool)> {
+    let end = start + MAX_RESULTS as usize;
     let output = Command::new("yt-dlp")
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .args(["--encoding", "utf-8", "--no-warnings", "--flat-playlist"])
         .args(["--print", "id", "--print", "duration", "--print", "channel", "--print", "title"])
-        .arg(format!("ytsearch{MAX_RESULTS}:{query}"))
+        .args(["-I", &format!("{}:", start + 1)])
+        .arg(format!("ytsearch{end}:{query}"))
         .output();
     let output = match output {
         Ok(o) => o,
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err("yt-dlp not found on PATH.\nInstall: winget install yt-dlp.yt-dlp\nThen restart Winamp.".into());
+            return Err(("yt-dlp not found on PATH.\nInstall: winget install yt-dlp.yt-dlp\nThen restart Winamp.".into(), false));
         }
-        Err(e) => return Err(format!("yt-dlp failed to start: {e}")),
+        Err(e) => return Err((format!("yt-dlp failed to start: {e}"), false)),
     };
     if !output.status.success() {
-        return Err(format!("yt-dlp: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        return Err((format!("yt-dlp: {}", String::from_utf8_lossy(&output.stderr).trim()), true));
     }
     Ok(parse_results(&String::from_utf8_lossy(&output.stdout)))
 }
@@ -921,8 +973,11 @@ mod tests {
     #[test]
     #[ignore]
     fn searches_live() {
-        let videos = search("me at the zoo").unwrap();
+        let videos = search("me at the zoo", 0).unwrap();
         println!("{videos:?}");
         assert!(!videos.is_empty());
+        let more = search("me at the zoo", videos.len()).unwrap();
+        // Pages can overlap (ranking shifts between requests), but the next page isn't the first again.
+        assert!(!more.is_empty() && more != videos);
     }
 }
