@@ -29,6 +29,9 @@ jobs:
       # --locked keeps the vergen 9.0.6 pin from Cargo.lock (see CLAUDE.md).
       - run: cargo test --release --locked --workspace
       - run: cargo build --release --locked --workspace
+        env:
+          # Baked into the DLL for the update check; local builds have none and never check.
+          SPOTITUBE_VERSION: ${{ github.ref_name }}
       # One flat zip: install.bat finds the DLLs next to itself after extraction.
       - name: Package
         shell: pwsh

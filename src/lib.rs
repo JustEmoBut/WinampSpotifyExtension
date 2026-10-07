@@ -5,6 +5,7 @@
 //! Struct layouts and IPC ids follow the Winamp SDK headers in2.h / out.h / wa_ipc.h / ipc_pe.h.
 
 mod albumart;
+mod update;
 mod youtube;
 
 use std::collections::HashMap;
@@ -85,6 +86,8 @@ const DEFAULT_CONFIG: &str = "; SpotiTube settings. Restart Winamp after changin
 spotify_bitrate=320
 ; yt-dlp format selector, e.g. bestaudio, bestaudio[abr<=128], worstaudio.
 youtube_format=bestaudio
+; 0 turns off the check for new releases on startup.
+check_updates=1
 ";
 const POLL: Duration = Duration::from_millis(10);
 const VOLUME_KEEP: i32 = -666; // SDK convention: re-apply current volume
@@ -825,6 +828,7 @@ unsafe extern "C" fn about(parent: Hwnd) {
 unsafe extern "C" fn init() {
     hook_stock_plugins();
     albumart::register();
+    update::check_in_background();
 }
 
 unsafe extern "C" fn quit() {

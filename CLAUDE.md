@@ -14,7 +14,8 @@ Two Winamp 5.9 plugins in Rust: the input plugin `in_spotitube.dll` (Spotify via
 - `src/youtube.rs`: link parsing, yt-dlp/ffmpeg process handling.
 - `src/albumart.rs`: album art provider registered through Winamp's Wasabi service API.
 - `ml_spotitube/`: Media Library plugin (`ml_spotitube.dll`, no librespot) with a YouTube search view built from raw Win32 controls, skinned via `ML_IPC_SKINWINDOW`. It only enqueues links; `in_spotitube.dll` plays them.
-- Settings: `%APPDATA%\in_spotitube\config.ini` (`spotify_bitrate`, `youtube_format`), opened by the plugin's Configure button.
+- `src/update.rs`: startup update check against GitHub's `releases/latest` API (needs the repo to be public: unauthenticated requests to a private repo get 404). Only release builds check: CI bakes the tag in as `SPOTITUBE_VERSION`. Each version is offered once (`update_notified` file).
+- Settings: `%APPDATA%\in_spotitube\config.ini` (`spotify_bitrate`, `youtube_format`, `check_updates`), opened by the plugin's Configure button.
 
 ## Winamp constraints (verified against Winamp 5.9 source)
 - `in_mp3` is always loaded first and claims every `http(s)` URL. `Init()` wraps the stock plugins' `IsOurFile` so our links fall through to us.

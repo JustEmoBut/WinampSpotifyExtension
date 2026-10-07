@@ -267,7 +267,7 @@ const DOWNLOAD_TIMEOUT_MS: u32 = 3000;
 const READ_CHUNK: usize = 16 * 1024;
 
 /// Synchronous HTTP GET through WinINet (built into Windows, honors the system proxy).
-fn download(url: &str) -> Option<Vec<u8>> {
+pub fn download(url: &str) -> Option<Vec<u8>> {
     let agent = to_wide("in_spotitube");
     let url = to_wide(url);
     unsafe {
