@@ -29,7 +29,13 @@ jobs:
       # --locked keeps the vergen 9.0.6 pin from Cargo.lock (see CLAUDE.md).
       - run: cargo test --release --locked --workspace
       - run: cargo build --release --locked --workspace
+      # One flat zip: install.ps1 finds the DLLs next to itself after extraction.
+      - name: Package
+        shell: pwsh
+        run: |
+          $files = 'target/i686-pc-windows-msvc/release/in_spotitube.dll', 'target/i686-pc-windows-msvc/release/ml_spotitube.dll', 'install.ps1', 'install.bat'
+          Compress-Archive -Path $files -DestinationPath "SpotiTube-${{ github.ref_name }}.zip"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" target/i686-pc-windows-msvc/release/in_spotitube.dll target/i686-pc-windows-msvc/release/ml_spotitube.dll install.ps1 install.bat --generate-notes
+        run: gh release create "${{ github.ref_name }}" "SpotiTube-${{ github.ref_name }}.zip" --generate-notes

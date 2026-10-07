@@ -76,7 +76,7 @@ Notes:
 
 ### 2. Install the plugin
 
-Download `in_spotitube.dll`, `ml_spotitube.dll`, `install.ps1` and `install.bat` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest) into the same folder, then double-click **`install.bat`**.
+Download `SpotiTube-<version>.zip` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest), extract it, then double-click **`install.bat`**.
 
 The script finds Winamp (from the registry, or pass `-Winamp <folder>`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
 
