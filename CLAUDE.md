@@ -39,6 +39,7 @@ Two Winamp 5.9 plugins in Rust: the input plugin `in_spotitube.dll` (Spotify via
 - The library's dialog navigation swallows Enter; the query edit is subclassed to return `DLGC_WANTALLKEYS`.
 - Tree icon: drawn in code as a 24-bit `HBITMAP` (no resource compiler), added with `ML_IPC_IMAGELIST_ADD` + `MLIF_FILTER1` (white maps to the skin's item color). The tree item's `imageIndex` is a tag, not an index; keep the bitmap alive, the library copies it on each reload.
 - Results are enqueued with `IPC_PLAYFILEW` + `enqueueFileWithMetaStructW` (5.9 layout has an `ext` field).
+- The results' right-click menu goes through `ML_IPC_TRACKSKINNEDPOPUPEX` (`MLSKINNEDPOPUP`) so it's drawn in the skin; with `TPM_RETURNCMD` it returns the chosen command id.
 
 ## YouTube
 - yt-dlp needs `--encoding utf-8`; `PYTHONIOENCODING`/`PYTHONUTF8` silently drop non-ASCII characters.
