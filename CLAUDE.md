@@ -5,7 +5,7 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 ## Build & install
 - Target is 32-bit `i686-pc-windows-msvc` (default via `.cargo/config.toml`); Winamp is a 32-bit process.
 - Cargo workspace: `in_spotitube` (root) and `ml_spotitube/`. `cargo build --release --workspace`, `cargo test --release --workspace`; `-- --ignored` runs live tests (network, cached Spotify login).
-- Install: `install.bat` (wraps `install.ps1`, which finds Winamp via the registry, self-elevates and removes the pre-rename `in_spotify.dll`; `-Uninstall` removes the plugin). Release: push a `v*` tag; `.github/workflows/release.yml` builds and attaches the DLL + both scripts.
+- Install: `install.bat` (wraps `install.ps1`, which finds Winamp via the registry, self-elevates and removes the pre-rename `in_spotify.dll`; `-Uninstall` removes the plugin). Release: push a `v*` tag; `.github/workflows/release.yml` builds and attaches the DLL + both scripts. `.github/workflows/ci.yml` tests every push to main and saves the build cache that the release job restores (tags can only read main's caches).
 - Renamed from `in_spotify`: `cache_dir()` moves `%APPDATA%\in_spotify` to `in_spotitube` once so cached credentials survive.
 - `Cargo.lock` pins `vergen` 9.0.6: librespot-core 0.8.0's build script breaks with vergen 9.1.0. Don't `cargo update` blindly.
 

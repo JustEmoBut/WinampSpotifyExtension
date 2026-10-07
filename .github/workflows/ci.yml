@@ -1,14 +1,14 @@
-name: Release
+name: CI
 
+# Runs the tests on main and fills the build cache that tag releases restore
+# (a tag can only read caches saved on the default branch).
 on:
   push:
-    tags: ["v*"]
-
-permissions:
-  contents: write
+    branches: [main]
+  pull_request:
 
 jobs:
-  release:
+  test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -16,8 +16,8 @@ jobs:
       - id: rustc
         shell: bash
         run: echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
-      # Restore only: the cache is filled by ci.yml on main (same key scheme).
-      - uses: actions/cache/restore@v6
+      # Keyed on Cargo.lock and the compiler: a new rustc invalidates every artifact anyway.
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -28,8 +28,3 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
       # --locked keeps the vergen 9.0.6 pin from Cargo.lock (see CLAUDE.md).
       - run: cargo test --release --locked --workspace
-      - run: cargo build --release --locked --workspace
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" target/i686-pc-windows-msvc/release/in_spotitube.dll target/i686-pc-windows-msvc/release/ml_spotitube.dll install.ps1 install.bat --generate-notes
