@@ -45,7 +45,11 @@ const IDYES: i32 = 6;
 const SW_SHOWNORMAL: i32 = 1;
 const WM_COPYDATA: u32 = 0x004A;
 const WM_WA_IPC: u32 = 0x0400; // WM_USER
-const IPC_STARTPLAY: isize = 102;
+/// Main window commands for the Stop and Play buttons. IPC_STARTPLAY can't be used to start a
+/// given entry: Winamp's BeginPlayback() resets the playlist position to 0 first.
+const WINAMP_BUTTON_STOP: usize = 40047;
+const WINAMP_BUTTON_PLAY: usize = 40045;
+const WM_COMMAND: u32 = 0x0111;
 const IPC_SETPLAYLISTPOS: isize = 121;
 const IPC_GETLISTLENGTH: isize = 124;
 const IPC_GETLISTPOS: isize = 125;
@@ -436,7 +440,8 @@ fn replace_current_entry(entries: &[String]) {
         }
         SendMessageW(pe, WM_WA_IPC, IPC_PE_DELETEINDEX, pos);
         SendMessageW(main, WM_WA_IPC, pos as usize, IPC_SETPLAYLISTPOS);
-        SendMessageW(main, WM_WA_IPC, 0, IPC_STARTPLAY);
+        SendMessageW(main, WM_COMMAND, WINAMP_BUTTON_STOP, 0);
+        SendMessageW(main, WM_COMMAND, WINAMP_BUTTON_PLAY, 0);
     }
 }
 
@@ -933,7 +938,7 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
         *youtube::STREAM.lock().unwrap() = None;
         return match link {
             youtube::Link::Playlist(id) => {
-                // Output stays closed; the expansion's IPC_STARTPLAY plays the first video.
+                // Output stays closed; the expansion restarts playback at the first video.
                 let generation = next_generation();
                 std::thread::spawn(move || youtube::expand(id, generation));
                 0
@@ -950,7 +955,7 @@ unsafe extern "C" fn play(file: *const u16) -> i32 {
     *youtube::STREAM.lock().unwrap() = None;
 
     if !matches!(uri, SpotifyUri::Track { .. }) {
-        // Output stays closed; IPC_STARTPLAY from expand_task stops us and plays the first track.
+        // Output stays closed; expand_task restarts playback at the first track.
         let generation = next_generation();
         runtime().spawn(expand_task(uri, generation));
         return 0;

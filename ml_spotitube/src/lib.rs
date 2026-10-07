@@ -37,9 +37,13 @@ const SKIN_STYLE: u32 = SWS_USESKINFONT | SWS_USESKINCOLORS | SWS_USESKINCURSORS
 
 const WM_WA_IPC: u32 = 0x0400;
 const IPC_PLAYFILEW: isize = 1100;
-const IPC_STARTPLAY: isize = 102;
 const IPC_SETPLAYLISTPOS: isize = 121;
 const IPC_GETLISTLENGTH: isize = 124;
+/// Main window commands for the Stop and Play buttons. IPC_STARTPLAY can't be used to start a
+/// given entry: Winamp's BeginPlayback() resets the playlist position to 0 first.
+const WINAMP_BUTTON_STOP: usize = 40047;
+const WINAMP_BUTTON_PLAY: usize = 40045;
+const WM_COMMAND: u32 = 0x0111;
 
 const WM_CREATE: u32 = 0x0001;
 const WM_SIZE: u32 = 0x0005;
@@ -48,7 +52,6 @@ const WM_NOTIFY: u32 = 0x004E;
 const WM_GETDLGCODE: u32 = 0x0087;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_CHAR: u32 = 0x0102;
-const WM_COMMAND: u32 = 0x0111;
 const WM_APP: u32 = 0x8000;
 const WM_SEARCH_DONE: u32 = WM_APP + 1;
 const VK_RETURN: usize = 0x0D;
@@ -583,7 +586,8 @@ unsafe fn add_selected(hwnd: Hwnd, play: bool) {
         }
         if play {
             SendMessageW(winamp, WM_WA_IPC, first as usize, IPC_SETPLAYLISTPOS);
-            SendMessageW(winamp, WM_WA_IPC, 0, IPC_STARTPLAY);
+            SendMessageW(winamp, WM_COMMAND, WINAMP_BUTTON_STOP, 0);
+            SendMessageW(winamp, WM_COMMAND, WINAMP_BUTTON_PLAY, 0);
         }
     }
 }

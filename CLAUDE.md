@@ -21,7 +21,7 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 - Winamp rewrites bare `spotify:` entries into file paths when saving the playlist (`<dir>\spotify:track:...`). Insert `https://open.spotify.com/track/<id>` entries; `parse_link` also accepts the mangled form.
 - `SAAddPCMData`/`VSAAddPCMData` always read 576 frames: the buffer passed to them must be at least that long (`VIS_MIN_FRAMES`).
 - All DSP/vis/output calls go through `write_pcm` under the `OUT_OPEN` lock: Winamp's EQ (`benskiQ`) uses a global, unsynchronized buffer and expects a single caller.
-- Album/playlist entries are replaced in place via `IPC_PE_INSERTFILENAMEW` + `IPC_PE_DELETEINDEX`, then `IPC_STARTPLAY`.
+- Album/playlist entries are replaced in place via `IPC_PE_INSERTFILENAMEW` + `IPC_PE_DELETEINDEX`, then `IPC_SETPLAYLISTPOS` + the Stop/Play button commands (40047/40045). Never `IPC_STARTPLAY` to start a given entry: `BeginPlayback()` resets the position to 0 (shuffle: random).
 
 - Winamp source for verifying ABI: `github.com/manfromafar/winamp` (the official WinampDesktop repo is gone). Sparse-clone it; key paths: `Src/Winamp/IN2.H`, `Src/Winamp/In.cpp`, `Src/albumart/AlbumArt.cpp`, `Src/Plugins/Input/in_wv/wasabi/`.
 - `In_Module.service` is only written by Winamp when `version` has `IN_INIT_RET`; we don't set it, so our struct ends at `out_mod`.
