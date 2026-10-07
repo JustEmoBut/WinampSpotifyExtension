@@ -211,18 +211,17 @@ pub fn stream(mut source: Source, start_ms: u32, generation: u64) {
 
     // googlevideo intermittently answers 403 when ffmpeg opens a fresh yt-dlp URL;
     // a newly resolved URL usually works, so retry once before any audio went out.
-    if let Outcome::Failed { started: false, stderr } = &outcome {
-        if stderr.contains("403") && is_current(generation) {
-            if let Ok(lines) = yt_dlp(&["-f", &crate::youtube_format(), "--print", "urls", &source.page]) {
-                if let Some(url) = lines.into_iter().next() {
-                    source.audio = url;
-                    if is_current(generation) {
-                        *STREAM.lock().unwrap() = Some(source.clone());
-                    }
-                    outcome = run_ffmpeg(&source.audio, start_ms, generation);
-                }
-            }
+    if let Outcome::Failed { started: false, stderr } = &outcome
+        && stderr.contains("403")
+        && is_current(generation)
+        && let Ok(lines) = yt_dlp(&["-f", &crate::youtube_format(), "--print", "urls", &source.page])
+        && let Some(url) = lines.into_iter().next()
+    {
+        source.audio = url;
+        if is_current(generation) {
+            *STREAM.lock().unwrap() = Some(source.clone());
         }
+        outcome = run_ffmpeg(&source.audio, start_ms, generation);
     }
 
     if !is_current(generation) {
@@ -272,7 +271,7 @@ fn run_ffmpeg(url: &str, start_ms: u32, generation: u64) -> Outcome {
             Ok(n) => n,
         };
         started = true;
-        let pcm: Vec<i16> = bytes[..n].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let pcm: Vec<i16> = bytes[..n].as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect();
         if !write_pcm(&pcm, Some(generation)) {
             // Stop or seek: ffmpeg may still be streaming; don't leave it running.
             let _ = child.kill();

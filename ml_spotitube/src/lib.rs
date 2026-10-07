@@ -295,6 +295,8 @@ pub extern "C" fn winampGetMediaLibraryPlugin() -> *mut c_void {
     (&raw mut PLUGIN).cast()
 }
 
+// `&PLUGIN` would be a reference to a `static mut` the library writes to; go through a raw pointer.
+#[allow(clippy::deref_addrof)]
 fn plugin() -> &'static MlPlugin {
     // SAFETY: the library fills the struct before calling init.
     unsafe { &*(&raw const PLUGIN) }

@@ -159,6 +159,8 @@ struct InModule {
     out_mod: *mut OutModule,
 }
 
+// A c"" literal can't hold the double NUL that `file_extensions` needs.
+#[allow(clippy::manual_c_str_literals)]
 static mut MODULE: InModule = InModule {
     version: IN_VER_UNICODE,
     description: c"SpotiTube: Spotify + YouTube".as_ptr().cast(),
@@ -238,6 +240,8 @@ pub extern "C" fn winampGetInModule2() -> *mut c_void {
     (&raw mut MODULE).cast()
 }
 
+// `&MODULE` would be a reference to a `static mut` Winamp writes to; go through a raw pointer.
+#[allow(clippy::deref_addrof)]
 fn module() -> &'static InModule {
     // SAFETY: Winamp fills the struct once before calling any entry point.
     unsafe { &*(&raw const MODULE) }
@@ -377,8 +381,9 @@ fn hook_stock_plugin<const I: usize>() {
         }
         HOOKED_UNICODE[I].store((*m).version & IN_UNICODE_MASK == IN_UNICODE_MASK, Ordering::Relaxed);
         HOOKED_ORIGINALS[I].store((*m).is_our_file as usize, Ordering::Relaxed);
-        (*m).is_our_file = std::mem::transmute(
-            hooked_is_our_file::<I> as unsafe extern "C" fn(*const c_void) -> i32,
+        // Same ABI; the hook takes `c_void` because the string is wide or narrow per plugin.
+        (*m).is_our_file = std::mem::transmute::<unsafe extern "C" fn(*const c_void) -> i32, unsafe extern "C" fn(*const u16) -> i32>(
+            hooked_is_our_file::<I>,
         );
     }
 }
@@ -529,10 +534,11 @@ fn cache_dir() -> PathBuf {
     let dir = base.join("in_spotitube");
     // Pre-rename installs kept credentials in `in_spotify`; move them so users stay logged in.
     let legacy = base.join("in_spotify");
-    if !dir.exists() && legacy.exists() {
-        if let Err(e) = std::fs::rename(&legacy, &dir) {
-            show_error(&format!("Could not move {} to {}: {e}\nYou may need to log in to Spotify again.", legacy.display(), dir.display()));
-        }
+    if !dir.exists()
+        && legacy.exists()
+        && let Err(e) = std::fs::rename(&legacy, &dir)
+    {
+        show_error(&format!("Could not move {} to {}: {e}\nYou may need to log in to Spotify again.", legacy.display(), dir.display()));
     }
     dir
 }
@@ -783,10 +789,10 @@ fn write_pcm(pcm: &[i16], generation: Option<u64>) -> bool {
             let o = out();
             let mut n = frames;
             unsafe {
-                if m.dsp_is_active.is_some_and(|f| f() != 0) {
-                    if let Some(dsp) = m.dsp_do_samples {
-                        n = dsp(buf.as_mut_ptr(), frames as i32, BITS, CHANNELS, SAMPLE_RATE) as usize;
-                    }
+                if m.dsp_is_active.is_some_and(|f| f() != 0)
+                    && let Some(dsp) = m.dsp_do_samples
+                {
+                    n = dsp(buf.as_mut_ptr(), frames as i32, BITS, CHANNELS, SAMPLE_RATE) as usize;
                 }
                 let bytes = n * BYTES_PER_FRAME;
                 if (o.can_write)() >= bytes as i32 {
