@@ -78,9 +78,11 @@ Notes:
 
 Download `SpotiTube-<version>.zip` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest), extract it, then double-click **`install.bat`**.
 
-The script finds Winamp (from the registry, or pass `-Winamp <folder>`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
+The script finds Winamp (from the registry, or pass `/winamp "<folder>"`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
 
-To uninstall, run `install.bat -Uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
+If Windows won't let it ask for administrator rights, right-click `install.bat` → **Run as administrator**. It's a plain batch file, so PowerShell script restrictions don't apply.
+
+To uninstall, run `install.bat /uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
 
 ### Building from source
 
