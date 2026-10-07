@@ -1,7 +1,7 @@
 //! Update check and one-click update: on startup, asks GitHub for the latest release and, once
 //! per new version, offers to install it. Installing downloads the release zip, checks its
 //! SHA-256 against the digest GitHub reports, extracts it with Windows' tar and runs the bundled
-//! install.bat (which elevates, waits for Winamp to close and restarts it).
+//! `install.bat /update` (which elevates, closes Winamp, installs and restarts it).
 //! Only release builds know their version (`SPOTITUBE_VERSION`, set by CI from the tag), so local
 //! builds never check. `check_updates=0` in config.ini turns it off.
 
@@ -13,6 +13,10 @@ use crate::{
     IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_YESNO, MessageBoxW, SW_SHOWNORMAL, ShellExecuteW, cache_dir,
     config_value, module, to_wide,
 };
+
+/// Shown from a worker thread, which Windows doesn't let take the foreground on its own.
+const MB_SETFOREGROUND: u32 = 0x0001_0000;
+const MB_TOPMOST: u32 = 0x0004_0000;
 
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/JustEmoBut/WinampSpotifyExtension/releases/latest";
 /// Only zips from this repository's releases are installed.
@@ -60,7 +64,7 @@ pub fn check_in_background() {
         // Written before asking so a "No" isn't asked again; failure only means asking again next start.
         let _ = std::fs::create_dir_all(cache_dir()).and_then(|()| std::fs::write(&notified, &release.tag));
         let question = format!(
-            "SpotiTube {} is available (you have {current}).\n\nUpdate now? Windows will ask for administrator rights, and Winamp restarts once you close it.\n\nTurn these checks off with check_updates=0 in config.ini.",
+            "SpotiTube {} is available (you have {current}).\n\nUpdate now? Winamp will close, update and restart by itself (Windows may ask for administrator rights).\n\nTurn these checks off with check_updates=0 in config.ini.",
             release.tag
         );
         if !ask(&question, MB_YESNO | MB_ICONINFORMATION) {
@@ -77,13 +81,20 @@ pub fn check_in_background() {
 
 fn ask(text: &str, kind: u32) -> bool {
     let (text, caption) = (to_wide(text), to_wide("SpotiTube update"));
+    let kind = kind | MB_SETFOREGROUND | MB_TOPMOST;
     unsafe { MessageBoxW(module().h_main_window, text.as_ptr(), caption.as_ptr(), kind) == IDYES }
 }
 
 fn open(target: &str) -> bool {
+    run(target, None)
+}
+
+fn run(target: &str, params: Option<&str>) -> bool {
     let (verb, target) = (to_wide("open"), to_wide(target));
+    let params = params.map(to_wide);
+    let params = params.as_ref().map_or(std::ptr::null(), |p| p.as_ptr());
     let r = unsafe {
-        ShellExecuteW(module().h_main_window, verb.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
+        ShellExecuteW(module().h_main_window, verb.as_ptr(), target.as_ptr(), params, std::ptr::null(), SW_SHOWNORMAL)
     };
     r as usize > SHELL_EXECUTE_OK
 }
@@ -106,7 +117,8 @@ fn install(release: &Release) -> Result<(), String> {
     if !installer.exists() {
         return Err("the release zip has no install.bat".into());
     }
-    if !open(&installer.to_string_lossy()) {
+    // /update: the installer closes Winamp, installs without asking and restarts it.
+    if !run(&installer.to_string_lossy(), Some("/update")) {
         return Err("could not start install.bat".into());
     }
     Ok(())

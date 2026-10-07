@@ -1,6 +1,8 @@
 @echo off
 rem Installs in_spotitube.dll and ml_spotitube.dll into Winamp's Plugins folder.
-rem Usage: install.bat [/uninstall] [/winamp "C:\path\to\Winamp"]
+rem Usage: install.bat [/uninstall] [/winamp "C:\path\to\Winamp"] [/update]
+rem /update (used by the plugin's one-click update): closes Winamp itself, asks nothing,
+rem restarts Winamp and closes its window when it succeeded.
 rem Plain batch on purpose: PowerShell execution policy (even when set by Group Policy) only
 rem applies to script files, so this runs where install scripts are blocked.
 setlocal EnableExtensions
@@ -12,10 +14,14 @@ set "FIND=%SystemRoot%\System32\find.exe"
 
 set "MODE=install"
 set "WINAMP="
+set "UPDATE="
+rem Seconds to wait for Winamp to exit after asking it to close.
+set "CLOSE_TIMEOUT=30"
 :parse_args
 if "%~1"=="" goto args_done
 if /i "%~1"=="/uninstall" set "MODE=uninstall"
 if /i "%~1"=="-uninstall" set "MODE=uninstall"
+if /i "%~1"=="/update" set "UPDATE=1"
 if /i "%~1"=="/winamp" (set "WINAMP=%~2" & shift)
 if /i "%~1"=="-winamp" (set "WINAMP=%~2" & shift)
 shift
@@ -56,7 +62,9 @@ rem A one-line command, not a script file, so execution policy doesn't apply.
 rem Through cmd.exe /c with the whole command in one more pair of quotes: an elevated .bat is
 rem started as cmd /C "script" args, and with a quoted argument cmd strips the first and last
 rem quote, so the script never runs.
-powershell -NoProfile -Command "Start-Process -FilePath cmd.exe -ArgumentList '/c \"\"%SELF%\" /%MODE% /winamp \"%WINAMP%\"\"' -Verb RunAs" >nul 2>&1
+set "UPDATE_ARG="
+if defined UPDATE set "UPDATE_ARG= /update"
+powershell -NoProfile -Command "Start-Process -FilePath cmd.exe -ArgumentList '/c \"\"%SELF%\" /%MODE%%UPDATE_ARG% /winamp \"%WINAMP%\"\"' -Verb RunAs" >nul 2>&1
 if errorlevel 1 (
     echo Could not get administrator rights. Right-click install.bat and choose "Run as administrator".
     goto fail
@@ -66,12 +74,31 @@ exit /b 0
 rem "/install" from the elevation step above is just the default mode.
 
 set "WAS_RUNNING="
+set "WAITED=0"
 :wait_winamp
 tasklist /fi "imagename eq winamp.exe" 2>nul | "%FIND%" /i "winamp.exe" >nul
 if errorlevel 1 goto winamp_closed
+if defined UPDATE goto close_winamp
 set "WAS_RUNNING=1"
 echo Winamp is running. Close it, then press any key.
 pause >nul
+goto wait_winamp
+
+:close_winamp
+rem Without /f taskkill sends Winamp a close message, so it saves its playlist and settings.
+rem It is never killed: if it doesn't exit in time, the update stops and says so.
+if not defined WAS_RUNNING (
+    set "WAS_RUNNING=1"
+    echo Closing Winamp...
+    taskkill /im winamp.exe >nul 2>&1
+)
+if %WAITED% geq %CLOSE_TIMEOUT% (
+    echo Winamp didn't close within %CLOSE_TIMEOUT% seconds. Close it and run install.bat again.
+    goto fail
+)
+set /a WAITED+=1
+rem One-second pause that, unlike timeout.exe, works without a console input.
+ping -n 2 127.0.0.1 >nul
 goto wait_winamp
 :winamp_closed
 
@@ -97,6 +124,7 @@ set "MISSING="
 where yt-dlp >nul 2>&1 || set "MISSING=yt-dlp"
 where ffmpeg >nul 2>&1 || set "MISSING=%MISSING% ffmpeg"
 if not defined MISSING goto restart
+if defined UPDATE goto restart
 echo.
 echo Needed for YouTube but not found on PATH:%MISSING%
 set /p "ANSWER=Install with winget now? [y/N] "
@@ -106,7 +134,8 @@ if errorlevel 1 echo winget failed; install yt-dlp and ffmpeg manually.
 
 :restart
 if not defined WAS_RUNNING goto done
-set /p "ANSWER=Start Winamp again? [Y/n] "
+set "ANSWER=y"
+if not defined UPDATE set /p "ANSWER=Start Winamp again? [Y/n] "
 rem Elevated here; explorer.exe starts it with normal user rights.
 if /i not "%ANSWER%"=="n" start "" explorer.exe "%WINAMP%\winamp.exe"
 goto done
@@ -116,6 +145,7 @@ echo Copy failed. Is Winamp still running?
 goto fail
 
 :done
+if defined UPDATE exit /b 0
 echo.
 pause
 exit /b 0
