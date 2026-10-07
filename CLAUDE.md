@@ -1,6 +1,6 @@
 # Winamp SpotiTube
 
-Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, YouTube via external yt-dlp + ffmpeg.
+Two Winamp 5.9 plugins in Rust: the input plugin `in_spotitube.dll` (Spotify via librespot, YouTube via external yt-dlp + ffmpeg) and the Media Library plugin `ml_spotitube.dll` (YouTube search).
 
 ## Build & install
 - Target is 32-bit `i686-pc-windows-msvc` (default via `.cargo/config.toml`); Winamp is a 32-bit process.
@@ -22,7 +22,6 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 - `SAAddPCMData`/`VSAAddPCMData` always read 576 frames: the buffer passed to them must be at least that long (`VIS_MIN_FRAMES`).
 - All DSP/vis/output calls go through `write_pcm` under the `OUT_OPEN` lock: Winamp's EQ (`benskiQ`) uses a global, unsynchronized buffer and expects a single caller.
 - Album/playlist entries are replaced in place via `IPC_PE_INSERTFILENAMEW` + `IPC_PE_DELETEINDEX`, then `IPC_SETPLAYLISTPOS` + the Stop/Play button commands (40047/40045). Never `IPC_STARTPLAY` to start a given entry: `BeginPlayback()` resets the position to 0 (shuffle: random).
-
 - Winamp source for verifying ABI: `github.com/manfromafar/winamp` (the official WinampDesktop repo is gone). Sparse-clone it; key paths: `Src/Winamp/IN2.H`, `Src/Winamp/In.cpp`, `Src/albumart/AlbumArt.cpp`, `Src/Plugins/Input/in_wv/wasabi/`.
 - `In_Module.service` is only written by Winamp when `version` has `IN_INIT_RET`; we don't set it, so our struct ends at `out_mod`.
 - Tags come from the exported `winampGetExtendedFileInfoW` (keys like `artist`, `album`, `year`); returning 0 lets Winamp fall back to `GetFileInfo`.
@@ -33,13 +32,20 @@ Winamp 5.9 input plugin (`in_spotitube.dll`) in Rust: Spotify via librespot, You
 - For URLs Winamp only asks `ALBUMARTPROVIDER_TYPE_EMBEDDED` providers, first `IsMine` wins. Buffers returned to Winamp must come from `api_memmgr` (`sysMalloc`), since Winamp frees them.
 - Images are downloaded with WinINet (3 s timeout) because Winamp may call on the UI thread. Classic skins have no album art panel.
 
+## Media Library plugin (`ml_spotitube/`)
+- ABI per `gen_ml/ml.h` and `ml_ipc_0313.h`: `MLHDR_VER` (0x17, wide description), tree item via `ML_IPC_TREEITEM_ADDW`, view created on `ML_MSG_TREE_ONCREATEVIEW`.
+- The library doesn't clear the previous view's area: the view paints its own background (`WADLG_WNDBG` from `ML_IPC_SKIN_WADLG_GETFUNC`).
+- The library's dialog navigation swallows Enter; the query edit is subclassed to return `DLGC_WANTALLKEYS`.
+- Tree icon: drawn in code as a 24-bit `HBITMAP` (no resource compiler), added with `ML_IPC_IMAGELIST_ADD` + `MLIF_FILTER1` (white maps to the skin's item color). The tree item's `imageIndex` is a tag, not an index; keep the bitmap alive, the library copies it on each reload.
+- Results are enqueued with `IPC_PLAYFILEW` + `enqueueFileWithMetaStructW` (5.9 layout has an `ext` field).
+
 ## YouTube
 - yt-dlp needs `--encoding utf-8`; `PYTHONIOENCODING`/`PYTHONUTF8` silently drop non-ASCII characters.
 - `watch?v=..&list=..` expands the playlist, except auto mixes (`list=RD...`), which yt-dlp can't flat-list.
 - Seeking restarts ffmpeg with `-ss`; a 403 on open is retried once with a freshly resolved URL.
 
 ## Debugging crashes
-- Known open issue: intermittent heap corruption (`0xc0000374`) seen after the YouTube changes; root cause not found yet.
+- Known open issue: intermittent heap corruption (`0xc0000374`); root cause not found yet. Dumps show it detected in unrelated `free`s (clearing a playlist, NDE strings, a worker thread) with no thread in our code, once in a session where Spotify never played. Reproduced by clearing a large Spotify playlist; a full page heap run didn't crash yet.
 - Crash dumps land in `%LOCALAPPDATA%\CrashDumps`; analyze with `cdbX86.exe -z <dmp>` (WinDbg, x86 build) and symbol path including `target\i686-pc-windows-msvc\release`.
 - To catch corruption at the write site, enable full page heap for `winamp.exe` (admin):
   `reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\winamp.exe" /v GlobalFlag /t REG_SZ /d 0x02000000 /f`

@@ -1,6 +1,6 @@
 # Winamp SpotiTube
 
-A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums, playlists and artists' top tracks — and YouTube videos and playlists (audio only) — straight from the Winamp playlist. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
+Two Winamp plugins: `in_spotitube.dll` plays Spotify tracks, albums, playlists and artists' top tracks — and YouTube videos and playlists (audio only) — straight from the Winamp playlist; `ml_spotitube.dll` adds YouTube search to the Media Library. Spotify audio is decoded by [librespot](https://github.com/librespot-org/librespot), YouTube audio by [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org); both are fed through Winamp's own output, EQ, DSP and visualization plugins.
 
 > **Disclaimer:** librespot is an unofficial Spotify client, and streaming YouTube through yt-dlp is not permitted by YouTube's Terms of Service. Either may put your account at risk. Use at your own risk. This project only streams; it never saves audio to disk.
 
@@ -10,7 +10,7 @@ A Winamp input plugin (`in_spotitube.dll`) that plays Spotify tracks, albums, pl
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist; artist, album, year and track number are exposed as tags (YouTube: channel as artist, also for playlist entries)
-- YouTube search in the Media Library (*YouTube Search* in the tree): double-click or **Play** to play, **Enqueue** to add to the playlist
+- YouTube search in the Media Library (*YouTube Search* in the tree): type and press Enter, then double-click or **Play** to play, **Enqueue** to add to the playlist
 - Album art: Spotify album covers and YouTube thumbnails, wherever Winamp shows art (e.g. Modern skins' album art panel, Media Library)
 - The next playlist entry is resolved while the current one plays, so it starts without the usual delay (not with shuffle)
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
@@ -92,13 +92,13 @@ Winamp is a 32-bit application, so the plugin must be built for `i686` (already 
 git clone https://github.com/JustEmoBut/WinampSpotifyExtension.git
 cd WinampSpotifyExtension
 rustup target add i686-pc-windows-msvc
-cargo build --release
+cargo build --release --workspace
 .\install.bat
 ```
 
-Output: `target\i686-pc-windows-msvc\release\in_spotitube.dll` (the install script picks it up automatically).
+Output: `in_spotitube.dll` and `ml_spotitube.dll` in `target\i686-pc-windows-msvc\release\` (the install script picks them up automatically).
 
-Releases are built by GitHub Actions when a `v*` tag is pushed.
+Releases (`SpotiTube-<version>.zip`) are built by GitHub Actions when a `v*` tag is pushed.
 
 ## Usage
 
@@ -121,13 +121,17 @@ Titles show as raw links until you are logged in; after the first track starts t
 | Login fails / browser shows a connection error | Port `8989` must be free; close whatever is using it and try again. |
 | *Spotify connect failed* after it used to work | Delete `%APPDATA%\in_spotitube` to force a fresh login. |
 | `signtool.exe`: *not a valid application for this OS platform* | You used the `arm64` build; use the `x64` (or `x86`) folder. |
+| *YouTube Search* missing from the Media Library | `ml_spotitube.dll` isn't in `Winamp\Plugins`; rerun `install.bat` from the release zip. |
+| `install.bat` can't get administrator rights | Right-click it → **Run as administrator**. |
 | *yt-dlp / ffmpeg not found on PATH* | Install them with winget (see Requirements), then restart Winamp. |
 | YouTube error from yt-dlp (e.g. *Sign in to confirm*, *unavailable*) | Update yt-dlp: `winget upgrade yt-dlp.yt-dlp`. Private, age-restricted or region-locked videos can't play. |
 | Build error in `librespot-core` build script about `vergen` | Keep the committed `Cargo.lock` (it pins `vergen` to 9.0.6); don't run `cargo update` blindly. |
 
 ## Limitations
 
-- Artist links, podcasts/episodes and local files are not supported (skipped when expanding playlists).
+- Podcasts/episodes and local files are not supported (skipped when expanding playlists).
+- Preloading the next entry doesn't work with shuffle (plugins can't see the shuffle order).
+- Classic skins have no album art panel; covers show in Modern skins and the Media Library.
 - A very short glitch may be audible right after seeking.
 - YouTube is audio only. A watch link with `&list=` expands the whole playlist, except auto-generated mixes (`list=RD...`), which play just that video.
 - Pausing a YouTube video for a long time may end the stream early.
@@ -140,6 +144,8 @@ Titles show as raw links until you are logged in; after the first track starts t
 - A custom librespot `Sink` converts decoded audio to 16-bit PCM and writes it through Winamp's DSP, visualization and output plugin.
 - YouTube: `yt-dlp` resolves the title, duration and best audio stream URL; `ffmpeg` decodes it to the same 16-bit PCM path. Seeking restarts ffmpeg at the new position.
 - Album/playlist entries are replaced in place with their tracks via Winamp's playlist IPC.
+- Tags come from the plugin's extended file info export; album art comes from an album art provider registered with Winamp's service API, which downloads the Spotify cover or YouTube thumbnail.
+- `ml_spotitube.dll` is a separate Media Library plugin: it runs `yt-dlp ytsearch` and only adds links to the playlist; `in_spotitube.dll` plays them.
 
 ## License
 
