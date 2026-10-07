@@ -46,7 +46,10 @@ for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Wind
 if defined WINAMP if exist "%WINAMP%\winamp.exe" goto check_winamp
 set "WINAMP=%ProgramFiles(x86)%\Winamp"
 :check_winamp
-if exist "%WINAMP%\Plugins\" goto winamp_found
+rem winamp.exe, not just the folder: Winamp's uninstaller leaves Plugins behind when it holds files
+rem it didn't install (like ours). Uninstalling only needs that folder.
+if exist "%WINAMP%\winamp.exe" goto winamp_found
+if "%MODE%"=="uninstall" if exist "%WINAMP%\Plugins\" goto winamp_found
 rem Not installed: run a Winamp setup found next to this script or in Downloads silently (NSIS /S).
 if "%MODE%"=="uninstall" goto no_winamp
 if defined SETUP_TRIED goto no_winamp
