@@ -108,6 +108,10 @@ const ID_ENQUEUE: usize = 104;
 const ID_OPEN_BROWSER: usize = 105;
 const ID_ENQUEUE_ALL: usize = 106;
 const ID_MORE: usize = 107;
+const ID_SOURCE_YOUTUBE: usize = 108;
+const ID_SOURCE_MUSIC: usize = 109;
+/// Marks the active source button.
+const ACTIVE_MARK: &str = "● ";
 
 const MARGIN: i32 = 8;
 const ROW_HEIGHT: i32 = 24;
@@ -390,6 +394,8 @@ static PENDING: Mutex<Pending> = Mutex::new(None);
 static RESULTS: Mutex<Vec<Video>> = Mutex::new(Vec::new());
 /// Last query, restored when the view is recreated.
 static QUERY: Mutex<String> = Mutex::new(String::new());
+/// Search YouTube Music songs instead of YouTube videos; set by the source buttons.
+static MUSIC: AtomicBool = AtomicBool::new(false);
 /// The tree icon bitmap; the library copies it on each (re)load, so it lives until quit.
 static ICON: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -605,6 +611,8 @@ unsafe extern "system" fn view_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
                 match wparam & 0xFFFF {
                     ID_SEARCH => start_search(hwnd),
                     ID_MORE => more_results(hwnd),
+                    ID_SOURCE_YOUTUBE => set_source(hwnd, false),
+                    ID_SOURCE_MUSIC => set_source(hwnd, true),
                     ID_PLAY => add_videos(&selected(hwnd), true),
                     ID_ENQUEUE => add_videos(&selected(hwnd), false),
                     _ => {}
@@ -651,7 +659,7 @@ unsafe fn create_controls(hwnd: Hwnd) {
         let edit = child(hwnd, "Edit", &QUERY.lock().unwrap(), WS_TABSTOP | ES_AUTOHSCROLL, ID_QUERY);
         skin(edit, SKINNEDWND_TYPE_EDIT, SKIN_STYLE);
         EDIT_PROC.store(SetWindowLongW(edit, GWLP_WNDPROC, edit_proc as WndProc as usize as isize), Ordering::SeqCst);
-        for (text, id) in [("Search", ID_SEARCH), ("Play", ID_PLAY), ("Enqueue", ID_ENQUEUE), ("More", ID_MORE)] {
+        for (text, id) in [("", ID_SOURCE_YOUTUBE), ("", ID_SOURCE_MUSIC), ("Search", ID_SEARCH), ("Play", ID_PLAY), ("Enqueue", ID_ENQUEUE), ("More", ID_MORE)] {
             skin(child(hwnd, "Button", text, WS_TABSTOP, id), SKINNEDWND_TYPE_BUTTON, SKIN_STYLE);
         }
         let list = child(hwnd, "SysListView32", "", WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS, ID_LIST);
@@ -663,6 +671,7 @@ unsafe fn create_controls(hwnd: Hwnd) {
         }
         skin(list, SKINNEDWND_TYPE_LISTVIEW, SKIN_STYLE | SWLVS_FULLROWSELECT | SWLVS_DOUBLEBUFFER | SWLVS_ALTERNATEITEMS);
         fill_list(hwnd, &RESULTS.lock().unwrap());
+        update_source_buttons(hwnd);
     }
 }
 
@@ -673,7 +682,11 @@ unsafe fn layout(hwnd: Hwnd) {
         GetClientRect(hwnd, &mut r);
         let (w, h) = (r.right, r.bottom);
         let search_x = w - MARGIN - BUTTON_WIDTH;
-        MoveWindow(item(hwnd, ID_QUERY), MARGIN, MARGIN, (search_x - 2 * MARGIN).max(0), ROW_HEIGHT, 1);
+        let music_x = search_x - MARGIN - BUTTON_WIDTH;
+        let youtube_x = music_x - BUTTON_WIDTH;
+        MoveWindow(item(hwnd, ID_QUERY), MARGIN, MARGIN, (youtube_x - 2 * MARGIN).max(0), ROW_HEIGHT, 1);
+        MoveWindow(item(hwnd, ID_SOURCE_YOUTUBE), youtube_x, MARGIN, BUTTON_WIDTH, ROW_HEIGHT, 1);
+        MoveWindow(item(hwnd, ID_SOURCE_MUSIC), music_x, MARGIN, BUTTON_WIDTH, ROW_HEIGHT, 1);
         MoveWindow(item(hwnd, ID_SEARCH), search_x, MARGIN, BUTTON_WIDTH, ROW_HEIGHT, 1);
         let list_y = 2 * MARGIN + ROW_HEIGHT;
         let bottom_y = h - MARGIN - ROW_HEIGHT;
@@ -734,11 +747,38 @@ fn run_search(hwnd: Hwnd, query: String, start: usize) {
     set_searching(hwnd, true);
     let target = hwnd as usize;
     std::thread::spawn(move || {
-        let result = search(&query, start);
+        let result = search(&query, start, MUSIC.load(Ordering::SeqCst));
         *PENDING.lock().unwrap() = Some((id, start, result));
         // Fails harmlessly if the view was closed meanwhile.
         unsafe { PostMessageW(target as Hwnd, WM_SEARCH_DONE, id as usize, 0) };
     });
+}
+
+/// Source buttons' labels; the active one carries `ACTIVE_MARK`.
+fn source_labels(music: bool) -> [String; 2] {
+    let mark = |active: bool, name: &str| if active { format!("{ACTIVE_MARK}{name}") } else { name.to_owned() };
+    [mark(!music, "YouTube"), mark(music, "YT Music")]
+}
+
+fn update_source_buttons(hwnd: Hwnd) {
+    let labels = source_labels(MUSIC.load(Ordering::SeqCst));
+    for (id, label) in [ID_SOURCE_YOUTUBE, ID_SOURCE_MUSIC].into_iter().zip(labels) {
+        let text = to_wide(&label);
+        unsafe { SetWindowTextW(item(hwnd, id), text.as_ptr()) };
+    }
+}
+
+/// Switches between YouTube and YouTube Music and repeats the last search there, so "More"
+/// always continues from the source the list came from.
+fn set_source(hwnd: Hwnd, music: bool) {
+    if MUSIC.swap(music, Ordering::SeqCst) == music {
+        return;
+    }
+    update_source_buttons(hwnd);
+    let query = QUERY.lock().unwrap().clone();
+    if !query.is_empty() {
+        run_search(hwnd, query, 0);
+    }
 }
 
 fn set_searching(hwnd: Hwnd, searching: bool) {
@@ -883,9 +923,9 @@ fn add_videos(videos: &[Video], play: bool) {
 /// line since titles may contain any separator.
 /// On failure, self-updates yt-dlp once per session and retries, since YouTube changes often
 /// break older versions (same policy as in_spotitube's playback).
-fn search(query: &str, start: usize) -> Result<Vec<Video>, String> {
-    match run_search_once(query, start) {
-        Err((_, true)) if self_update() => run_search_once(query, start).map_err(|(msg, _)| msg),
+fn search(query: &str, start: usize, music: bool) -> Result<Vec<Video>, String> {
+    match run_search_once(query, start, music) {
+        Err((_, true)) if self_update() => run_search_once(query, start, music).map_err(|(msg, _)| msg),
         result => result.map_err(|(msg, _)| msg),
     }
 }
@@ -903,15 +943,21 @@ fn self_update() -> bool {
 }
 
 /// Error carries whether yt-dlp ran and failed (worth retrying after an update).
-fn run_search_once(query: &str, start: usize) -> Result<Vec<Video>, (String, bool)> {
+fn run_search_once(query: &str, start: usize, music: bool) -> Result<Vec<Video>, (String, bool)> {
     let end = start + MAX_RESULTS as usize;
+    // YouTube Music's song search; its flat listing has no artist or duration ("NA").
+    let target = if music {
+        format!("https://music.youtube.com/search?q={}#songs", url_encode(query))
+    } else {
+        format!("ytsearch{end}:{query}")
+    };
     let output = Command::new("yt-dlp")
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .args(["--encoding", "utf-8", "--no-warnings", "--flat-playlist"])
         .args(["--print", "id", "--print", "duration", "--print", "channel", "--print", "title"])
         .args(["-I", &format!("{}:", start + 1)])
-        .arg(format!("ytsearch{end}:{query}"))
+        .arg(target)
         .output();
     let output = match output {
         Ok(o) => o,
@@ -924,6 +970,13 @@ fn run_search_once(query: &str, start: usize) -> Result<Vec<Video>, (String, boo
         return Err((format!("yt-dlp: {}", String::from_utf8_lossy(&output.stderr).trim()), true));
     }
     Ok(parse_results(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Percent-encodes everything but unreserved characters (RFC 3986).
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
 }
 
 fn parse_results(stdout: &str) -> Vec<Video> {
@@ -959,6 +1012,9 @@ mod tests {
         assert_eq!((videos[1].channel.as_str(), videos[1].length_secs, videos[1].title.as_str()), ("", -1, "Live | now"));
         assert_eq!(videos[0].url(), "https://www.youtube.com/watch?v=jNQXAC9IVRw");
         assert_eq!(format_length(61), "1:01");
+        assert_eq!(source_labels(false), ["● YouTube".to_owned(), "YT Music".to_owned()]);
+        assert_eq!(source_labels(true), ["YouTube".to_owned(), "● YT Music".to_owned()]);
+        assert_eq!(url_encode("a b&c=ç#"), "a%20b%26c%3D%C3%A7%23");
         assert_eq!(format_length(-1), "");
         assert_eq!(column_widths(684), [420, 180, 60]);
         assert_eq!(column_widths(0), [0, 0, 60]);
@@ -973,10 +1029,12 @@ mod tests {
     #[test]
     #[ignore]
     fn searches_live() {
-        let videos = search("me at the zoo", 0).unwrap();
+        let music = search("daft punk one more time", 0, true).unwrap();
+        assert!(music.len() > 1 && music[0].id != music[1].id);
+        let videos = search("me at the zoo", 0, false).unwrap();
         println!("{videos:?}");
         assert!(!videos.is_empty());
-        let more = search("me at the zoo", videos.len()).unwrap();
+        let more = search("me at the zoo", videos.len(), false).unwrap();
         // Pages can overlap (ranking shifts between requests), but the next page isn't the first again.
         assert!(!more.is_empty() && more != videos);
     }

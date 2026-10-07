@@ -10,7 +10,7 @@ Two Winamp plugins: `in_spotitube.dll` plays Spotify tracks, albums, playlists a
 - Paste YouTube links: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `music.youtube.com`, `youtube.com/playlist?list=`
 - Album and playlist entries expand into their individual tracks when played
 - Track titles and durations appear in the playlist; artist, album, year and track number are exposed as tags (YouTube: channel as artist, also for playlist entries)
-- YouTube search in the Media Library (*YouTube Search* in the tree): type and press Enter, then double-click or **Play** to play, **Enqueue** to add to the playlist, **More** for the next 30 results; right-click for *Open in browser* and *Enqueue all results*
+- YouTube search in the Media Library (*YouTube Search* in the tree): type and press Enter, then double-click or **Play** to play, **Enqueue** to add to the playlist, **More** for the next 30 results, the **YouTube** / **YT Music** buttons (● marks the active one) to search YouTube Music songs instead of videos (no artist or length shown there until played); right-click for *Open in browser* and *Enqueue all results*
 - Album art: Spotify album covers and YouTube thumbnails, wherever Winamp shows art (e.g. Modern skins' album art panel, Media Library)
 - The next playlist entry is resolved while the current one plays, so it starts without the usual delay (not with shuffle)
 - Seek, pause, volume, EQ, DSP and visualizers work like any local file
