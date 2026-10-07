@@ -53,7 +53,10 @@ net session >nul 2>&1
 if not errorlevel 1 goto is_admin
 echo Requesting administrator rights to write to "%PLUGINS%"...
 rem A one-line command, not a script file, so execution policy doesn't apply.
-powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -ArgumentList '/%MODE% /winamp \"%WINAMP%\"' -Verb RunAs" >nul 2>&1
+rem Through cmd.exe /c with the whole command in one more pair of quotes: an elevated .bat is
+rem started as cmd /C "script" args, and with a quoted argument cmd strips the first and last
+rem quote, so the script never runs.
+powershell -NoProfile -Command "Start-Process -FilePath cmd.exe -ArgumentList '/c \"\"%SELF%\" /%MODE% /winamp \"%WINAMP%\"\"' -Verb RunAs" >nul 2>&1
 if errorlevel 1 (
     echo Could not get administrator rights. Right-click install.bat and choose "Run as administrator".
     goto fail
