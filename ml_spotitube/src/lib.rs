@@ -18,6 +18,8 @@ const WM_ML_IPC: u32 = 0x0400 + 0x1000; // WM_USER + 0x1000
 const ML_MSG_TREE_ONCREATEVIEW: i32 = 0x100;
 const ML_IPC_TREEITEM_ADDW: isize = 0x133;
 const ML_IPC_SKINWINDOW: isize = 0x1400;
+const ML_IPC_TRACKSKINNEDPOPUPEX: isize = 0x1402;
+const SMS_USESKINFONT: u32 = 0x1;
 const ML_IPC_IMAGELIST_ADD: isize = 0x1260 + 5;
 const ML_IPC_NAVCTRL_GETIMAGELIST: isize = 0x1280 + 7;
 const SRC_TYPE_HBITMAP: u32 = 0x03;
@@ -68,6 +70,13 @@ const VK_RETURN: usize = 0x0D;
 const DLGC_WANTALLKEYS: isize = 0x4;
 const BN_CLICKED: usize = 0;
 const NM_DBLCLK: i32 = -3;
+const NM_RCLICK: i32 = -5;
+const MF_STRING: u32 = 0x0;
+const MF_GRAYED: u32 = 0x1;
+const MF_SEPARATOR: u32 = 0x800;
+const TPM_RIGHTBUTTON: u32 = 0x2;
+const TPM_RETURNCMD: u32 = 0x100;
+const SW_SHOWNORMAL: i32 = 1;
 const GWLP_WNDPROC: i32 = -4;
 const MB_ICONERROR: u32 = 0x10;
 
@@ -96,6 +105,8 @@ const ID_SEARCH: usize = 101;
 const ID_LIST: usize = 102;
 const ID_PLAY: usize = 103;
 const ID_ENQUEUE: usize = 104;
+const ID_OPEN_BROWSER: usize = 105;
+const ID_ENQUEUE_ALL: usize = 106;
 
 const MARGIN: i32 = 8;
 const ROW_HEIGHT: i32 = 24;
@@ -187,6 +198,29 @@ struct BitmapInfoHeader {
     y_ppm: i32,
     clr_used: u32,
     clr_important: u32,
+}
+
+#[repr(C)]
+struct MlSkinnedPopup {
+    size: i32,
+    menu: *mut c_void,
+    flags: u32,
+    x: i32,
+    y: i32,
+    hwnd: Hwnd,
+    tpm_params: *mut c_void,
+    image_list: *mut c_void,
+    width: i32,
+    skin_style: u32,
+    custom_proc: *mut c_void,
+    custom_param: usize,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct Point {
+    x: i32,
+    y: i32,
 }
 
 #[repr(C)]
@@ -301,6 +335,17 @@ unsafe extern "system" {
     fn EnableWindow(hwnd: Hwnd, enable: i32) -> i32;
     fn FillRect(hdc: *mut c_void, rect: *const Rect, brush: *mut c_void) -> i32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    fn CreatePopupMenu() -> *mut c_void;
+    fn AppendMenuW(menu: *mut c_void, flags: u32, id: usize, text: *const u16) -> i32;
+    fn DestroyMenu(menu: *mut c_void) -> i32;
+    fn GetCursorPos(point: *mut Point) -> i32;
+}
+
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn ShellExecuteW(
+        hwnd: Hwnd, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32,
+    ) -> *mut c_void;
 }
 
 const fn wide<const N: usize>(s: &str) -> [u16; N] {
@@ -556,8 +601,8 @@ unsafe extern "system" fn view_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
             WM_COMMAND if wparam >> 16 == BN_CLICKED => {
                 match wparam & 0xFFFF {
                     ID_SEARCH => start_search(hwnd),
-                    ID_PLAY => add_selected(hwnd, true),
-                    ID_ENQUEUE => add_selected(hwnd, false),
+                    ID_PLAY => add_videos(&selected(hwnd), true),
+                    ID_ENQUEUE => add_videos(&selected(hwnd), false),
                     _ => {}
                 }
                 0
@@ -565,7 +610,9 @@ unsafe extern "system" fn view_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam:
             WM_NOTIFY => {
                 let hdr = &*(lparam as *const NmHdr);
                 if hdr.id_from == ID_LIST && hdr.code == NM_DBLCLK {
-                    add_selected(hwnd, true);
+                    add_videos(&selected(hwnd), true);
+                } else if hdr.id_from == ID_LIST && hdr.code == NM_RCLICK {
+                    show_menu(hwnd);
                 }
                 0
             }
@@ -713,26 +760,86 @@ unsafe fn fill_list(hwnd: Hwnd, videos: &[Video]) {
     }
 }
 
-/// Adds the selected results to Winamp's playlist; with `play`, starts the first of them.
-unsafe fn add_selected(hwnd: Hwnd, play: bool) {
+/// The results selected in the list, in list order.
+fn selected(hwnd: Hwnd) -> Vec<Video> {
     let list = item(hwnd, ID_LIST);
-    let results = RESULTS.lock().unwrap().clone();
-    let mut selected = Vec::new();
+    let results = RESULTS.lock().unwrap();
+    let mut videos = Vec::new();
     let mut row = -1isize;
     loop {
         row = unsafe { SendMessageW(list, LVM_GETNEXTITEM, row as usize, LVNI_SELECTED) };
         match usize::try_from(row).ok().and_then(|r| results.get(r)) {
-            Some(v) => selected.push(v),
+            Some(v) => videos.push(v.clone()),
             None => break,
         }
     }
-    if selected.is_empty() {
+    videos
+}
+
+/// Right-click menu on the results, drawn by the library in the skin's style.
+unsafe fn show_menu(hwnd: Hwnd) {
+    let videos = selected(hwnd);
+    let any = if videos.is_empty() { MF_GRAYED } else { MF_STRING };
+    let all = if RESULTS.lock().unwrap().is_empty() { MF_GRAYED } else { MF_STRING };
+    let mut cursor = Point::default();
+    let command = unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        for (flags, id, text) in [
+            (any, ID_PLAY, "Play"),
+            (any, ID_ENQUEUE, "Enqueue"),
+            (any, ID_OPEN_BROWSER, "Open in browser"),
+            (MF_SEPARATOR, 0, ""),
+            (all, ID_ENQUEUE_ALL, "Enqueue all results"),
+        ] {
+            let text = to_wide(text);
+            AppendMenuW(menu, flags, id, text.as_ptr());
+        }
+        GetCursorPos(&mut cursor);
+        let mut popup = MlSkinnedPopup {
+            size: size_of::<MlSkinnedPopup>() as i32,
+            menu,
+            flags: TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            x: cursor.x,
+            y: cursor.y,
+            hwnd,
+            tpm_params: std::ptr::null_mut(),
+            image_list: std::ptr::null_mut(),
+            width: 0,
+            skin_style: SMS_USESKINFONT,
+            custom_proc: std::ptr::null_mut(),
+            custom_param: 0,
+        };
+        let command = SendMessageW(plugin().hwnd_library, WM_ML_IPC, (&raw mut popup) as usize, ML_IPC_TRACKSKINNEDPOPUPEX);
+        DestroyMenu(menu);
+        command as usize
+    };
+    match command {
+        ID_PLAY => add_videos(&videos, true),
+        ID_ENQUEUE => add_videos(&videos, false),
+        ID_OPEN_BROWSER => {
+            let (verb, empty) = (to_wide("open"), std::ptr::null());
+            for v in &videos {
+                let url = to_wide(&v.url());
+                unsafe { ShellExecuteW(hwnd, verb.as_ptr(), url.as_ptr(), empty, empty, SW_SHOWNORMAL) };
+            }
+        }
+        ID_ENQUEUE_ALL => add_videos(&RESULTS.lock().unwrap().clone(), false),
+        _ => {} // cancelled
+    }
+}
+
+/// Adds `videos` to Winamp's playlist; with `play`, starts the first of them.
+fn add_videos(videos: &[Video], play: bool) {
+    if videos.is_empty() {
         return;
     }
     let winamp = plugin().hwnd_winamp;
     unsafe {
         let first = SendMessageW(winamp, WM_WA_IPC, 0, IPC_GETLISTLENGTH);
-        for v in selected {
+        for v in videos {
             let (url, title) = (to_wide(&v.url()), to_wide(&v.title));
             let entry = EnqueueFileWithMetaW { filename: url.as_ptr(), title: title.as_ptr(), ext: std::ptr::null(), length_secs: v.length_secs };
             SendMessageW(winamp, WM_WA_IPC, (&raw const entry) as usize, IPC_PLAYFILEW);
