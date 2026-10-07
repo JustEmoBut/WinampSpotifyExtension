@@ -54,13 +54,17 @@ set "SETUP_TRIED=1"
 set "SETUP="
 for %%S in ("%HERE%winamp*.exe" "%USERPROFILE%\Downloads\winamp*.exe") do if not defined SETUP set "SETUP=%%~fS"
 if not defined SETUP goto no_winamp
-echo Installing Winamp from "%SETUP%"...
+echo Winamp is not installed. Installing it silently from:
+echo   %SETUP%
+echo   ^(Windows asks for administrator rights; this takes about 10 seconds.^)
 start "" /wait "%SETUP%" /S
 set "WINAMP="
 goto find_winamp
 :no_winamp
-echo Winamp not found. Install it (or put its setup next to install.bat), or run:
-echo install.bat /winamp "C:\path\to\Winamp"
+echo Winamp not found. Either:
+echo   - put the Winamp setup ^(winamp*.exe from winamp.com^) next to install.bat or in Downloads,
+echo   - install Winamp yourself, or
+echo   - run: install.bat /winamp "C:\path\to\Winamp"
 goto fail
 :winamp_found
 set "PLUGINS=%WINAMP%\Plugins"
@@ -94,6 +98,14 @@ if errorlevel 1 (
 exit /b 0
 :is_admin
 rem "/install" from the elevation step above is just the default mode.
+if defined UPDATE goto banner_done
+echo ============================================================
+if "%MODE%"=="install" (echo  SpotiTube installer) else (echo  SpotiTube uninstaller)
+echo ============================================================
+echo  Winamp:  %WINAMP%
+if "%MODE%"=="install" echo  Plugins: %SRC%
+echo.
+:banner_done
 
 set "WAS_RUNNING="
 set "WAITED=0"
@@ -139,36 +151,63 @@ rem Only that exact certificate is stripped (no Windows SDK needed: the signatur
 rem block of the file plus an 8-byte header entry); the original is kept as elevator.exe.bak.
 rem Exit codes: 0 nothing to do, 1 stripped, 2 unexpected file layout.
 set "ELEVATOR=%WINAMP%\elevator.exe"
-if not exist "%ELEVATOR%" goto copy_plugins
+echo [1/4] Checking Winamp's elevator.exe certificate...
+if not exist "%ELEVATOR%" (
+    echo       elevator.exe not found, skipped.
+    goto copy_plugins
+)
 powershell -NoProfile -Command "$f=$env:ELEVATOR; $s=Get-AuthenticodeSignature $f; if ($s.Status -ne 'UnknownError' -or $s.SignerCertificate.Thumbprint -ne '%REVOKED_THUMBPRINT%') { exit 0 }; $b=[IO.File]::ReadAllBytes($f); $p=[BitConverter]::ToInt32($b,60); if ([BitConverter]::ToUInt16($b,$p+24) -ne 0x10b) { exit 2 }; $x=$p+24+128; $o=[BitConverter]::ToInt32($b,$x); $n=[BitConverter]::ToInt32($b,$x+4); if ($o -le 0 -or $o+$n -ne $b.Length) { exit 2 }; Copy-Item $f ($f+'.bak') -Force; [Array]::Clear($b,$x,8); [IO.File]::WriteAllBytes($f,$b[0..($o-1)]); exit 1"
 if errorlevel 2 (
-    echo Warning: couldn't remove the revoked signature from elevator.exe; see the README.
+    echo       Warning: couldn't remove the revoked signature; see the README.
 ) else if errorlevel 1 (
-    echo Removed Winamp's revoked signature from elevator.exe ^(original: elevator.exe.bak^).
+    echo       Removed the revoked signature ^(original kept as elevator.exe.bak^).
+    echo       Winamp's first-run wizard can now ask for administrator rights instead of being blocked.
+) else (
+    echo       OK, nothing to fix.
 )
 :copy_plugins
+echo [2/4] Copying plugins to "%PLUGINS%"...
 copy /y "%SRC%in_spotitube.dll" "%PLUGINS%\" >nul || goto copy_failed
+echo       in_spotitube.dll  ^(Spotify and YouTube playback^)
 if exist "%SRC%ml_spotitube.dll" (
     copy /y "%SRC%ml_spotitube.dll" "%PLUGINS%\" >nul || goto copy_failed
+    echo       ml_spotitube.dll  ^(YouTube Search in the Media Library^)
 ) else (
-    echo Warning: ml_spotitube.dll not found; YouTube search in the Media Library is not installed.
+    echo       Warning: ml_spotitube.dll not found; YouTube Search in the Media Library is not installed.
 )
-echo Installed to "%PLUGINS%".
 
-rem yt-dlp's winget package also pulls in yt-dlp.FFmpeg.
+rem yt-dlp's winget package also pulls in yt-dlp.FFmpeg. Installed without asking, since YouTube
+rem doesn't play without them.
+echo [3/4] Checking yt-dlp and ffmpeg ^(needed for YouTube^)...
 set "MISSING="
 where yt-dlp >nul 2>&1 || set "MISSING=yt-dlp"
 where ffmpeg >nul 2>&1 || set "MISSING=%MISSING% ffmpeg"
-if not defined MISSING goto restart
-if defined UPDATE goto restart
-echo.
-echo Needed for YouTube but not found on PATH:%MISSING%
-set /p "ANSWER=Install with winget now? [y/N] "
-if /i not "%ANSWER%"=="y" goto restart
-winget install --id yt-dlp.yt-dlp -e
-if errorlevel 1 echo winget failed; install yt-dlp and ffmpeg manually.
+if not defined MISSING (
+    echo       OK, both found.
+    goto restart
+)
+echo       Not found:%MISSING%
+where winget >nul 2>&1 || (
+    echo       winget is not available; install yt-dlp and ffmpeg manually.
+    goto restart
+)
+echo       Installing with winget ^(yt-dlp.yt-dlp, which pulls in ffmpeg^)...
+winget install --id yt-dlp.yt-dlp -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+if errorlevel 1 (
+    echo       winget failed; install manually: winget install yt-dlp.yt-dlp
+) else (
+    echo       Installed. If YouTube later says yt-dlp isn't found, sign out and back in.
+)
 
 :restart
+if not defined UPDATE (
+    echo [4/4] Done.
+    echo.
+    echo Next: open Winamp, use Add - Add URL and paste a Spotify or YouTube link.
+    echo The first Spotify track opens your browser to log in ^(Premium needed^).
+    echo YouTube Search is in the Media Library tree.
+    echo.
+)
 if not defined WAS_RUNNING goto done
 set "ANSWER=y"
 if not defined UPDATE set /p "ANSWER=Start Winamp again? [Y/n] "

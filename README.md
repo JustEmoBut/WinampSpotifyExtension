@@ -41,7 +41,7 @@ The script:
 - finds Winamp (from the registry, or pass `/winamp "<folder>"`). If Winamp isn't installed, it runs a Winamp setup (`winamp*.exe`) found next to `install.bat` or in your Downloads folder silently, so a fresh PC only needs the [Winamp setup](https://www.winamp.com) downloaded;
 - asks for administrator rights and waits for Winamp to close;
 - [fixes Winamp's revoked certificate](#2-winamps-revoked-certificate) on `elevator.exe`;
-- removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
+- removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, installs yt-dlp/ffmpeg via winget if they're missing (accepting winget's source and package agreements) and offers to restart Winamp.
 
 If Windows won't let it ask for administrator rights, right-click `install.bat` → **Run as administrator**. It's a plain batch file, so PowerShell script restrictions don't apply.
 
