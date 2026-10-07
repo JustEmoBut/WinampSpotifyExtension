@@ -244,7 +244,7 @@ fn image(url: &str) -> Option<Vec<u8>> {
     {
         return Some(bytes.clone());
     }
-    let bytes = download(url)?;
+    let bytes = download(url, MAX_IMAGE_BYTES)?;
     *LAST_IMAGE.lock().unwrap() = Some((url.to_owned(), bytes.clone()));
     Some(bytes)
 }
@@ -267,7 +267,8 @@ const DOWNLOAD_TIMEOUT_MS: u32 = 3000;
 const READ_CHUNK: usize = 16 * 1024;
 
 /// Synchronous HTTP GET through WinINet (built into Windows, honors the system proxy).
-pub fn download(url: &str) -> Option<Vec<u8>> {
+/// Fails if the body is larger than `max_bytes`.
+pub fn download(url: &str, max_bytes: usize) -> Option<Vec<u8>> {
     let agent = to_wide("in_spotitube");
     let url = to_wide(url);
     unsafe {
@@ -286,7 +287,7 @@ pub fn download(url: &str) -> Option<Vec<u8>> {
         while ok {
             let mut n = 0u32;
             ok = InternetReadFile(req, chunk.as_mut_ptr().cast(), chunk.len() as u32, &mut n) != 0;
-            if !ok || n == 0 || out.len() + n as usize > MAX_IMAGE_BYTES {
+            if !ok || n == 0 || out.len() + n as usize > max_bytes {
                 ok = ok && n == 0;
                 break;
             }
@@ -307,7 +308,7 @@ mod tests {
     #[test]
     #[ignore]
     fn downloads_cover_live() {
-        let bytes = download("https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg").unwrap();
+        let bytes = download("https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg", MAX_IMAGE_BYTES).unwrap();
         assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "JPEG magic");
     }
 }
