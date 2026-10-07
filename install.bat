@@ -27,6 +27,9 @@ if /i "%~1"=="-winamp" (set "WINAMP=%~2" & shift)
 shift
 goto parse_args
 :args_done
+rem Started from the one-click updater's temp folder: update mode even without /update, since
+rem v0.3.3 and older start install.bat with no arguments.
+echo "%HERE%" | "%FIND%" /i "\SpotiTube-update-" >nul && set "UPDATE=1"
 
 rem --- Find Winamp: argument, installer's registry keys, default folder.
 if defined WINAMP goto check_winamp
