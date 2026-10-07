@@ -11,12 +11,17 @@ set "HERE=%~dp0"
 set "SELF=%~f0"
 rem Full path: Git for Windows can put its Unix find ahead of System32 on PATH.
 set "FIND=%SystemRoot%\System32\find.exe"
+rem Started from PowerShell 7, Windows PowerShell inherits its module path and can't load its own
+rem modules (Get-AuthenticodeSignature fails); empty, it falls back to its defaults.
+set "PSModulePath="
 
 set "MODE=install"
 set "WINAMP="
 set "UPDATE="
 rem Seconds to wait for Winamp to exit after asking it to close.
 set "CLOSE_TIMEOUT=30"
+rem Winamp SA's code-signing certificate, revoked by its issuer; elevator.exe is unsigned only for it.
+set "REVOKED_THUMBPRINT=DD90A1B0A3B7A71B42177DACD0A4EE6636EBF4DA"
 :parse_args
 if "%~1"=="" goto args_done
 if /i "%~1"=="/uninstall" set "MODE=uninstall"
@@ -33,6 +38,7 @@ echo "%HERE%" | "%FIND%" /i "\SpotiTube-update-" >nul && set "UPDATE=1"
 
 rem --- Find Winamp: argument, installer's registry keys, default folder.
 if defined WINAMP goto check_winamp
+:find_winamp
 for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Winamp" /ve 2^>nul ^| "%FIND%" "REG_SZ"') do set "WINAMP=%%B"
 if defined WINAMP if exist "%WINAMP%\winamp.exe" goto check_winamp
 set "WINAMP="
@@ -40,10 +46,23 @@ for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Wind
 if defined WINAMP if exist "%WINAMP%\winamp.exe" goto check_winamp
 set "WINAMP=%ProgramFiles(x86)%\Winamp"
 :check_winamp
-if not exist "%WINAMP%\Plugins\" (
-    echo Winamp not found. Run: install.bat /winamp "C:\path\to\Winamp"
-    goto fail
-)
+if exist "%WINAMP%\Plugins\" goto winamp_found
+rem Not installed: run a Winamp setup found next to this script or in Downloads silently (NSIS /S).
+if "%MODE%"=="uninstall" goto no_winamp
+if defined SETUP_TRIED goto no_winamp
+set "SETUP_TRIED=1"
+set "SETUP="
+for %%S in ("%HERE%winamp*.exe" "%USERPROFILE%\Downloads\winamp*.exe") do if not defined SETUP set "SETUP=%%~fS"
+if not defined SETUP goto no_winamp
+echo Installing Winamp from "%SETUP%"...
+start "" /wait "%SETUP%" /S
+set "WINAMP="
+goto find_winamp
+:no_winamp
+echo Winamp not found. Install it (or put its setup next to install.bat), or run:
+echo install.bat /winamp "C:\path\to\Winamp"
+goto fail
+:winamp_found
 set "PLUGINS=%WINAMP%\Plugins"
 
 rem --- Find the DLLs: next to this script (release zip) or in the build output (source checkout).
@@ -114,6 +133,20 @@ echo Settings and the cached Spotify login stay in "%APPDATA%\in_spotitube"; del
 goto done
 
 :do_install
+rem Winamp 5.9.2's elevator.exe is signed with a revoked certificate, so Windows blocks it from
+rem elevating and the first-run wizard loops. Without a signature it gets a normal UAC prompt.
+rem Only that exact certificate is stripped (no Windows SDK needed: the signature is the last
+rem block of the file plus an 8-byte header entry); the original is kept as elevator.exe.bak.
+rem Exit codes: 0 nothing to do, 1 stripped, 2 unexpected file layout.
+set "ELEVATOR=%WINAMP%\elevator.exe"
+if not exist "%ELEVATOR%" goto copy_plugins
+powershell -NoProfile -Command "$f=$env:ELEVATOR; $s=Get-AuthenticodeSignature $f; if ($s.Status -ne 'UnknownError' -or $s.SignerCertificate.Thumbprint -ne '%REVOKED_THUMBPRINT%') { exit 0 }; $b=[IO.File]::ReadAllBytes($f); $p=[BitConverter]::ToInt32($b,60); if ([BitConverter]::ToUInt16($b,$p+24) -ne 0x10b) { exit 2 }; $x=$p+24+128; $o=[BitConverter]::ToInt32($b,$x); $n=[BitConverter]::ToInt32($b,$x+4); if ($o -le 0 -or $o+$n -ne $b.Length) { exit 2 }; Copy-Item $f ($f+'.bak') -Force; [Array]::Clear($b,$x,8); [IO.File]::WriteAllBytes($f,$b[0..($o-1)]); exit 1"
+if errorlevel 2 (
+    echo Warning: couldn't remove the revoked signature from elevator.exe; see the README.
+) else if errorlevel 1 (
+    echo Removed Winamp's revoked signature from elevator.exe ^(original: elevator.exe.bak^).
+)
+:copy_plugins
 copy /y "%SRC%in_spotitube.dll" "%PLUGINS%\" >nul || goto copy_failed
 if exist "%SRC%ml_spotitube.dll" (
     copy /y "%SRC%ml_spotitube.dll" "%PLUGINS%\" >nul || goto copy_failed

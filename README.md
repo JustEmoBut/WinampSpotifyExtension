@@ -32,7 +32,24 @@ Two Winamp plugins: `in_spotitube.dll` plays Spotify tracks, albums, playlists a
 
 ## Installation
 
-### 1. Fix Winamp's revoked certificate (if needed)
+### 1. Install
+
+Download `SpotiTube-<version>.zip` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest), extract it, then double-click **`install.bat`**.
+
+The script:
+
+- finds Winamp (from the registry, or pass `/winamp "<folder>"`). If Winamp isn't installed, it runs a Winamp setup (`winamp*.exe`) found next to `install.bat` or in your Downloads folder silently, so a fresh PC only needs the [Winamp setup](https://www.winamp.com) downloaded;
+- asks for administrator rights and waits for Winamp to close;
+- [fixes Winamp's revoked certificate](#2-winamps-revoked-certificate) on `elevator.exe`;
+- removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
+
+If Windows won't let it ask for administrator rights, right-click `install.bat` → **Run as administrator**. It's a plain batch file, so PowerShell script restrictions don't apply.
+
+To uninstall, run `install.bat /uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
+
+### 2. Winamp's revoked certificate
+
+`install.bat` handles this automatically; this section explains what it does.
 
 Winamp 5.9.2 binaries are signed with a code-signing certificate that has been **revoked** by its issuer (not merely expired). Reinstalling from the official site does not help, because the current installer ships the same signed files.
 
@@ -43,47 +60,16 @@ Winamp 5.9.2 binaries are signed with a code-signing certificate that has been *
 
 **Cause:** that CLSID is the *Winamp Elevator* COM server (`elevator.exe`). Winamp launches it with administrator rights to register file associations, and Windows refuses to elevate a binary whose signature is revoked. `winamp.exe` itself runs fine without elevation.
 
-You can confirm it in PowerShell:
-
-```powershell
-Get-AuthenticodeSignature 'C:\Program Files (x86)\Winamp\elevator.exe' | Select-Object Status, StatusMessage
-# StatusMessage: A certificate was explicitly revoked by its issuer.
-```
-
-**Fix:** remove the revoked signature from `elevator.exe`. An unsigned binary gets a normal *Unknown publisher* UAC prompt instead of being blocked.
-
-1. Close Winamp.
-2. Find `signtool.exe` (ships with the Windows SDK, installed alongside Visual Studio's C++ workload). Use the build matching your CPU (`x64` on most PCs, **not** `arm64`):
-   ```powershell
-   Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe | Select-Object FullName
-   ```
-3. In an **administrator** PowerShell:
-   ```powershell
-   cd 'C:\Program Files (x86)\Winamp'
-   Copy-Item elevator.exe elevator.exe.bak
-   & 'C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\signtool.exe' remove /s elevator.exe
-   Get-AuthenticodeSignature elevator.exe | Select-Object Status   # should print NotSigned
-   ```
-   PowerShell needs the `&` in front of a quoted path to run it.
-4. Start Winamp, finish the setup wizard and answer **Yes** on the UAC prompt.
+**Fix:** `install.bat` removes the signature from `elevator.exe`, only when it is signed with exactly that revoked Winamp SA certificate, and keeps the original as `elevator.exe.bak`. An unsigned binary gets a normal *Unknown publisher* UAC prompt instead of being blocked. No Windows SDK is needed. Then start Winamp, finish the setup wizard and answer **Yes** on the UAC prompt.
 
 Notes:
 
 - Removing the signature means Windows can no longer verify that file. The risk is low for a file from the official installer, but it is a deliberate trade-off.
-- Reinstalling or updating Winamp restores the signed file, so repeat the steps afterwards.
+- Reinstalling or updating Winamp restores the signed file; run `install.bat` again afterwards.
 - To undo: copy `elevator.exe.bak` back over `elevator.exe`.
 - Do **not** disable UAC or certificate revocation checking system-wide to work around this.
+- Manual alternative: in an administrator PowerShell, `signtool.exe remove /s elevator.exe` (from the Windows SDK; use the `x64` build, not `arm64`).
 - Alternative without touching any file: skip file-type association in the wizard and in *Preferences → File Types*, and set default apps in *Windows Settings → Apps → Default apps* instead.
-
-### 2. Install the plugin
-
-Download `SpotiTube-<version>.zip` from the [latest release](https://github.com/JustEmoBut/WinampSpotifyExtension/releases/latest), extract it, then double-click **`install.bat`**.
-
-The script finds Winamp (from the registry, or pass `/winamp "<folder>"`), asks for administrator rights, waits for Winamp to close, removes the pre-rename `in_spotify.dll` if present, copies both plugins to `Winamp\Plugins`, offers to install yt-dlp/ffmpeg via winget and to restart Winamp.
-
-If Windows won't let it ask for administrator rights, right-click `install.bat` → **Run as administrator**. It's a plain batch file, so PowerShell script restrictions don't apply.
-
-To uninstall, run `install.bat /uninstall` from a terminal. Settings and the cached login stay in `%APPDATA%\in_spotitube`; delete that folder to remove them.
 
 ### Building from source
 
@@ -117,7 +103,7 @@ Titles show as raw links until you are logged in; after the first track starts t
 
 | Problem | Fix |
 |---|---|
-| UAC: *"This app has been blocked for your protection"* | See [Fix Winamp's revoked certificate](#1-fix-winamps-revoked-certificate-if-needed). |
+| UAC: *"This app has been blocked for your protection"* | Run `install.bat` again; see [Winamp's revoked certificate](#2-winamps-revoked-certificate). |
 | Playlist entry stuck at **[Connecting to host]** | The plugin isn't loaded, so Winamp's stock `in_mp3` grabbed the link. Check that `in_spotitube.dll` is in `Winamp\Plugins` and restart Winamp. |
 | Login fails / browser shows a connection error | Port `8989` must be free; close whatever is using it and try again. |
 | *Spotify connect failed* after it used to work | Delete `%APPDATA%\in_spotitube` to force a fresh login. |
